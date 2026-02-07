@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
 [![macOS](https://img.shields.io/badge/macOS-10.15%2B-lightgrey.svg)](https://www.apple.com/macos/)
 
-Command-line controller for Bluesound devices on macOS. Pure Python standard library — no external dependencies.
+Command-line controller for Bluesound devices on macOS. Pure Python standard library.
 
 ## Quick Start
 
@@ -62,7 +62,7 @@ Discovery methods: `mdns` (default), `lsdp`, or `both` (mDNS first, LSDP fallbac
 
 ### API Key Storage
 
-For UniFi integration, store your API key in macOS Keychain instead of plaintext config:
+Store your API key in macOS Keychain instead of plaintext config:
 
 ```bash
 bluesound-controller keychain set      # Store key
@@ -86,9 +86,6 @@ rm ~/local/bin/bluesound-controller
 
 ## Documentation
 
-- [Detailed Documentation](docs/README-DETAILED.md) — full usage guide, troubleshooting, development
-- [API Verification](docs/API_VERIFICATION.md) — BluOS API compatibility notes
-- [Production Readiness](docs/PRODUCTION_READINESS.md) — architecture and security overview
 - [CHANGELOG](CHANGELOG.md) — version history
 - [CONTRIBUTING](CONTRIBUTING.md) — contribution guidelines
 - [SECURITY](SECURITY.md) — security policy
