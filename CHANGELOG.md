@@ -7,16 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-24
+
 ### Changed
 
 - Minimum Python version raised to 3.10 (required for patched pytest 9.0.3+ in dev/test tooling)
 - CI test matrix now runs on Python 3.10–3.13
 - Packaging metadata and docs aligned with supported Python versions
+- Bumped test dependencies: `pytest` 9.0.3+, `pytest-cov` 7.1+, `pytest-mock` 3.15+, `coverage` 7.10+
+- Updated GitHub Actions to current major versions (`checkout@v7`, `setup-python@v6`, `codecov-action@v7`)
 
 ### Fixed
 
 - Correct setuptools build backend in `pyproject.toml`
 - Declare flat-layout modules for wheel/sdist builds
+- Stop printing partial API key output in `keychain get` (CodeQL alert #2)
+- Resolve pytest CVE-2025-71176 by requiring pytest >= 9.0.3
+- Use `files` instead of deprecated `file` input in Codecov upload step
 
 ## [1.0.0] - 2026-01-02
 
@@ -122,6 +129,6 @@ Production-ready command-line controller for Bluesound devices on macOS.
 - Python 3.10+ (standard library only)
 - macOS 10.15+ (uses `dns-sd` and `dscacheutil`)
 
-[Unreleased]: https://github.com/tbaur/bluesound-controller/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/tbaur/bluesound-controller/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/tbaur/bluesound-controller/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/tbaur/bluesound-controller/releases/tag/v1.0.0
-

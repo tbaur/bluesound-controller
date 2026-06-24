@@ -4,7 +4,7 @@
 
 A production-ready, unified command-line controller for Bluesound devices on macOS.
 
-v1.0.0 - Production-ready with retry logic, rate limiting, structured logging, and comprehensive error recovery.
+v1.1.0 - Maintenance release: Python 3.10+ minimum, security fixes, and packaging improvements.
 
 ## Features
 
@@ -766,7 +766,15 @@ The codebase is organized into modular components:
 
 ## Version
 
-v1.0.0
+v1.1.0
+
+### v1.1.0 Highlights
+
+- Python 3.10+ required
+- Security fixes for pytest dependency and keychain output
+- Packaging and CI workflow improvements
+
+See [CHANGELOG.md](../CHANGELOG.md) for the complete version history.
 
 ### v1.0.0 Features
 

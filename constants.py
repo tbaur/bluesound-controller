@@ -18,7 +18,7 @@ limitations under the License.
 """
 import os
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # --- PATHS ---
 BASE_DIR = os.path.expanduser("~/.config/bluesound-controller")
