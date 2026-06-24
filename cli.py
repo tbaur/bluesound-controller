@@ -801,10 +801,7 @@ class BluesoundCLI:
             if has_api_key():
                 stored_key = get_api_key()
                 if stored_key:
-                    # Show first 8 chars and last 4 chars for security
-                    masked = f"{stored_key[:8]}...{stored_key[-4:]}" if len(stored_key) > 12 else "***"
                     print(f"{GREEN}✓ API key found in Keychain{RESET}")
-                    print(f"  Key: {masked}")
                     print(f"  Length: {len(stored_key)} characters\n")
                 else:
                     print(f"{YELLOW}⚠ API key entry exists but could not be retrieved{RESET}\n")
