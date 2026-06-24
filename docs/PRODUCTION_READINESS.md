@@ -31,7 +31,7 @@
 - 258 tests, ~80%+ coverage
 - Unit, integration, and security tests
 - All network I/O mocked in tests
-- CI runs on Python 3.8–3.12
+- CI runs on Python 3.10–3.13
 
 ## Known Limitations
 

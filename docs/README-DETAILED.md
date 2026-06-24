@@ -226,7 +226,7 @@ The script will:
 ### Manual Installation
 
 1. Clone or copy this repository to `~/.config/bluesound-controller`
-2. Ensure Python 3.8+ is installed
+2. Ensure Python 3.10+ is installed
 3. Make `main.py` executable: `chmod +x main.py`
 4. Create `config.json` (see Configuration section)
 
@@ -541,7 +541,7 @@ This format is ideal for log aggregation systems, monitoring tools, and automate
 
 ## Requirements
 
-- **Python**: 3.8+ (uses only standard library - no external dependencies)
+- **Python**: 3.10+ (uses only standard library - no external dependencies)
 - **Operating System**: macOS (uses `dns-sd` and `dscacheutil` for mDNS discovery)
 - **Network**: Access to Bluesound devices on local network
 - **Optional**: UniFi Controller (for network statistics integration)
