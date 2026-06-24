@@ -39,7 +39,7 @@ Thank you for your interest in contributing to Bluesound Controller! This docume
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.10+
 - macOS (for testing)
 - Git
 

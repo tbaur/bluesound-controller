@@ -1,31 +1,46 @@
 [build-system]
 requires = ["setuptools>=64"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "bluesound-controller"
 version = "1.0.0"
 description = "A command-line controller for Bluesound devices on macOS"
 readme = "README.md"
-license = {text = "Apache-2.0"}
-requires-python = ">=3.9"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
 authors = [{name = "tbaur"}]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Multimedia :: Sound/Audio",
 ]
 
 [project.scripts]
 bluesound-controller = "main:main"
+
+[tool.setuptools]
+py-modules = [
+    "cli",
+    "config",
+    "constants",
+    "controller",
+    "keychain",
+    "lsdp",
+    "main",
+    "models",
+    "network",
+    "utils",
+    "validators",
+]
 
 [project.urls]
 Homepage = "https://github.com/tbaur/bluesound-controller"
@@ -33,15 +48,7 @@ Repository = "https://github.com/tbaur/bluesound-controller"
 Issues = "https://github.com/tbaur/bluesound-controller/issues"
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-markers = [
-    "unit: Unit tests",
-    "integration: Integration tests",
-    "slow: Slow running tests",
-]

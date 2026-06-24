@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Minimum Python version raised to 3.10 (required for patched pytest 9.0.3+ in dev/test tooling)
+- CI test matrix now runs on Python 3.10–3.13
+- Packaging metadata and docs aligned with supported Python versions
+
+### Fixed
+
+- Correct setuptools build backend in `pyproject.toml`
+- Declare flat-layout modules for wheel/sdist builds
+
 ## [1.0.0] - 2026-01-02
 
 ### Initial Release
@@ -108,7 +119,7 @@ Production-ready command-line controller for Bluesound devices on macOS.
 
 ### Requirements
 
-- Python 3.8+ (standard library only)
+- Python 3.10+ (standard library only)
 - macOS 10.15+ (uses `dns-sd` and `dscacheutil`)
 
 [Unreleased]: https://github.com/tbaur/bluesound-controller/compare/v1.0.0...HEAD
