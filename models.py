@@ -16,8 +16,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 """
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Optional
 
 
 @dataclass
@@ -47,7 +47,9 @@ class PlayerStatus:
     volume: int = 0
     db: str = ""             # RSSI
     fw: str = ""
-    master: str = ""         # IP of master if synced
+    master: str = ""         # IP of master if this player is a slave
+    group: str = ""          # Combined group name when this player is primary
+    slaves: List[str] = field(default_factory=list)  # Slave IPs when primary
     battery: Optional[str] = None
     track: str = ""
     artist: str = ""

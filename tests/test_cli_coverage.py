@@ -207,38 +207,101 @@ class TestCLICoverage:
     
     def test_sync_break(self, cli):
         """Test sync break."""
-        cli.ctl.ips = ['192.168.1.100']
+        cli.ctl.ips = ['192.168.1.100', '192.168.1.101']
         args = MagicMock()
         args.action = 'break'
         args.target = None
+        args.master = None
         
-        mock_future = MagicMock()
-        mock_future.result.return_value = PlayerStatus(ip="192.168.1.100", name="Test Speaker")
+        primary = PlayerStatus(
+            ip="192.168.1.100",
+            name="Living Room",
+            slaves=["192.168.1.101"],
+        )
+        slave = PlayerStatus(ip="192.168.1.101", name="Kitchen", master="192.168.1.100")
         
-        with patch('cli.as_completed', return_value=[mock_future]):
+        mock_future1 = MagicMock()
+        mock_future1.result.return_value = primary
+        mock_future2 = MagicMock()
+        mock_future2.result.return_value = slave
+        
+        with patch('cli.as_completed', return_value=[mock_future1, mock_future2]):
             with patch('cli.ThreadPoolExecutor') as mock_executor_class:
                 mock_executor = MagicMock()
                 mock_executor.__enter__ = MagicMock(return_value=mock_executor)
                 mock_executor.__exit__ = MagicMock(return_value=False)
-                mock_executor.submit.return_value = mock_future
+                mock_executor.submit.side_effect = [mock_future1, mock_future2]
                 mock_executor_class.return_value = mock_executor
                 
-                with patch('cli.Network') as mock_network:
-                    mock_network.get.return_value = b"ok"
+                with patch.object(cli.ctl, 'remove_sync_slave', return_value=True) as mock_remove:
                     with patch('builtins.print'):
                         cli.sync(args)
+                    mock_remove.assert_called_once_with("192.168.1.100", "192.168.1.101")
     
+    def test_sync_break_with_master_arg(self, cli):
+        """Test sync break accepts device name in master positional arg."""
+        primary = PlayerStatus(ip="192.168.1.100", name="Living Room", slaves=["192.168.1.101"])
+        slave = PlayerStatus(ip="192.168.1.101", name="Kitchen", master="192.168.1.100")
+
+        args = MagicMock()
+        args.action = 'break'
+        args.target = None
+        args.master = 'Kitchen'
+
+        with patch.object(cli, '_get_matching_devices', side_effect=[[primary, slave], [slave]]):
+            with patch.object(cli.ctl, 'remove_sync_slave', return_value=True) as mock_remove:
+                with patch('builtins.print'):
+                    cli.sync(args)
+                mock_remove.assert_called_once_with("192.168.1.100", "192.168.1.101")
+
+    def test_sync_list_no_ips(self, cli):
+        """Test sync list warns when no devices discovered."""
+        cli.ctl.ips = []
+        args = MagicMock()
+        args.action = 'list'
+
+        with patch('builtins.print') as mock_print:
+            cli.sync(args)
+            assert "No IPs found" in str(mock_print.call_args)
+
+    def test_format_status_row_aligns_source(self, cli):
+        """Status row keeps Source in the right-hand column."""
+        row = cli._format_status_row("★ PRIMARY ", 10, "Source: TidalConnect")
+        assert "Vol: 10%             |  Source: TidalConnect" in row
+
+    def test_format_sync_line_primary_shows_count_only(self, cli):
+        """Primary sync line shows slave count, not names."""
+        primary = PlayerStatus(
+            ip="172.16.10.174",
+            name="Living Room Speakers",
+            slaves=["172.16.10.88", "172.16.10.86", "172.16.10.48"],
+        )
+        line = cli._format_sync_line(primary, [primary])
+        assert line == "Sync:   3 slaves"
+
+    def test_format_sync_line_for_slave_uses_name(self, cli):
+        """Slaves should reference the primary by name, not IP."""
+        devices = [
+            PlayerStatus(ip="172.16.10.174", name="Living Room Speakers"),
+            PlayerStatus(ip="172.16.10.88", name="Kitchen Speakers", master="172.16.10.174"),
+        ]
+        line = cli._format_sync_line(devices[1], devices)
+        assert "Following" in line
+        assert "Living Room Speakers" in line
+        assert "172.16.10.174" not in line
+
     def test_sync_break_no_match(self, cli):
         """Test sync break with no matching devices."""
         cli.ctl.ips = ['192.168.1.100']
         args = MagicMock()
         args.action = 'break'
         args.target = 'NonExistent'
+        args.master = None
         
         mock_future = MagicMock()
         mock_future.result.return_value = PlayerStatus(ip="192.168.1.100", name="Test Speaker")
         
-        with patch('cli.as_completed', return_value=[]):
+        with patch('cli.as_completed', return_value=[mock_future]):
             with patch('cli.ThreadPoolExecutor') as mock_executor_class:
                 mock_executor = MagicMock()
                 mock_executor.__enter__ = MagicMock(return_value=mock_executor)
@@ -257,9 +320,14 @@ class TestCLICoverage:
         args.action = 'list'
         
         mock_future1 = MagicMock()
-        mock_future1.result.return_value = PlayerStatus(ip="192.168.1.100", name="Test Speaker", master="192.168.1.101")
+        mock_future1.result.return_value = PlayerStatus(
+            ip="192.168.1.100",
+            name="Living Room",
+            group="Living Room+Kitchen",
+            slaves=["192.168.1.101"],
+        )
         mock_future2 = MagicMock()
-        mock_future2.result.return_value = PlayerStatus(ip="192.168.1.101", name="Test Speaker 2")
+        mock_future2.result.return_value = PlayerStatus(ip="192.168.1.101", name="Kitchen", master="192.168.1.100")
         
         with patch('cli.as_completed', return_value=[mock_future1, mock_future2]):
             with patch('cli.ThreadPoolExecutor') as mock_executor_class:

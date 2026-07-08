@@ -40,6 +40,33 @@ from lsdp import LSDPDiscovery
 logger = logging.getLogger("Bluesound")
 
 
+def parse_bluos_host(value: Optional[str]) -> str:
+    """Extract an IP/host from BluOS endpoint values like ``172.16.0.1`` or ``172.16.0.1:11000``."""
+    if not value:
+        return ""
+    return value.strip().split(":")[0]
+
+
+def parse_sync_status_root(root: ET.Element) -> tuple[str, str, List[str]]:
+    """
+    Parse ``/SyncStatus`` XML for master IP, group name, and slave IPs.
+
+    BluOS may expose values as root attributes or child elements. Legacy clients
+    assumed ``master`` was an attribute; current firmware uses ``<master>``.
+    """
+    master = parse_bluos_host(root.attrib.get("master") or root.findtext("master") or "")
+
+    group = (root.attrib.get("group") or root.findtext("group") or "").strip()
+
+    slaves: List[str] = []
+    for slave_elem in root.findall("slave"):
+        slave_ip = parse_bluos_host(slave_elem.attrib.get("id") or slave_elem.text or "")
+        if slave_ip and slave_ip not in slaves:
+            slaves.append(slave_ip)
+
+    return master, group, slaves
+
+
 class BluesoundController:
     """Main controller for Bluesound device management."""
     
@@ -487,7 +514,7 @@ class BluesoundController:
                 status.brand = root.attrib.get('brand', '')
                 status.db = root.attrib.get('db', '')
                 status.fw = root.attrib.get('version', '')
-                status.master = root.attrib.get('master', '')
+                status.master, status.group, status.slaves = parse_sync_status_root(root)
                 
                 batt = root.find('battery')
                 if batt is not None:
@@ -723,7 +750,17 @@ class BluesoundController:
         if not sanitized_master or not sanitized_slave:
             return False
         get_rate_limiter().wait_if_needed(sanitized_master)
-        res = Network.get(f"http://{sanitized_master}:{BLUOS_PORT}/Sync?slave={sanitized_slave}", timeout=2)
+        res = Network.get(
+            f"http://{sanitized_master}:{BLUOS_PORT}/AddSlave?slave={sanitized_slave}&port={BLUOS_PORT}",
+            timeout=2,
+        )
+        if res is not None:
+            return True
+        get_rate_limiter().wait_if_needed(sanitized_master)
+        res = Network.get(
+            f"http://{sanitized_master}:{BLUOS_PORT}/Sync?slave={sanitized_slave}",
+            timeout=2,
+        )
         return res is not None
     
     def remove_sync_slave(self, master_ip: str, slave_ip: str) -> bool:
@@ -733,6 +770,58 @@ class BluesoundController:
         if not sanitized_master or not sanitized_slave:
             return False
         get_rate_limiter().wait_if_needed(sanitized_master)
-        res = Network.get(f"http://{sanitized_master}:{BLUOS_PORT}/Sync?remove={sanitized_slave}", timeout=2)
+        res = Network.get(
+            f"http://{sanitized_master}:{BLUOS_PORT}/RemoveSlave?slave={sanitized_slave}&port={BLUOS_PORT}",
+            timeout=2,
+        )
+        if res is not None:
+            return True
+        get_rate_limiter().wait_if_needed(sanitized_master)
+        res = Network.get(
+            f"http://{sanitized_master}:{BLUOS_PORT}/Sync?remove={sanitized_slave}",
+            timeout=2,
+        )
         return res is not None
+
+    def collect_sync_break_operations(
+        self,
+        devices: List[PlayerStatus],
+        targets: Optional[List[PlayerStatus]] = None,
+    ) -> List[tuple[str, str, str]]:
+        """
+        Build RemoveSlave operations as ``(master_ip, slave_ip, label)`` tuples.
+
+        Ungrouping is always initiated on the primary via ``RemoveSlave``.
+        """
+        device_names = {device.ip: device.name for device in devices}
+        operations: List[tuple[str, str, str]] = []
+        seen: set[tuple[str, str]] = set()
+
+        def add_operation(master_ip: str, slave_ip: str, label: str) -> None:
+            key = (master_ip, slave_ip)
+            if key in seen:
+                return
+            seen.add(key)
+            operations.append((master_ip, slave_ip, label))
+
+        scoped_devices = targets if targets is not None else devices
+
+        for device in scoped_devices:
+            if device.slaves:
+                for slave_ip in device.slaves:
+                    slave_name = device_names.get(slave_ip, slave_ip)
+                    add_operation(
+                        device.ip,
+                        slave_ip,
+                        f"{slave_name} from {device.name}",
+                    )
+            elif device.master:
+                master_name = device_names.get(device.master, device.master)
+                add_operation(
+                    device.master,
+                    device.ip,
+                    f"{device.name} from {master_name}",
+                )
+
+        return operations
 

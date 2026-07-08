@@ -111,12 +111,33 @@ v1.1.0 - Maintenance release: Python 3.10+ minimum, security fixes, and packagin
 
 ### Sync Group Management
 
-**Multi-Room Synchronization:**
-- Create sync groups with master/slave relationships
-- Add multiple slave devices to a master
-- Break sync groups (remove devices from sync)
-- List all sync groups and their relationships
-- Devices in sync groups automatically follow master playback
+**Multi-Room Synchronization (runtime groups):**
+- Create sync groups with a primary player and one or more slaves
+- Uses BluOS `AddSlave` / `RemoveSlave` on the primary (not legacy `/Sync`)
+- Break sync groups by removing slaves from the primary
+- List groups with primary/slave relationships and combined group names
+- Parses `/SyncStatus` for `group`, `<master>`, and `<slave>` elements
+- Devices in sync groups automatically follow primary playback
+
+**Example output (`sync list`):**
+
+```text
+Group: Living Room Speakers + 1 slave
+  Primary: Living Room Speakers (172.16.10.174)
+  Slave:   Kitchen Speakers (172.16.10.88)
+
+Standalone:
+  Patio Speakers (172.16.10.90)
+```
+
+**Example output (`status`, grouped primary with 7 slaves):**
+
+```text
+[1] Living Room Speakers
+    Status: ★ PRIMARY  |  Vol: 10%  |  Source: Tidal
+    Sync:   6 slaves
+    ♫ Track:  Hayling
+```
 
 ### Device Diagnostics
 
@@ -455,16 +476,32 @@ bluesound-controller presets "Living Room" 1
 
 ### Sync Group Management
 
+Runtime BluOS groups use the **primary** player to attach or detach slaves.
+
 ```bash
-# Create sync group
-bluesound-controller sync create "Living Room" "Kitchen,Bedroom"
+# Create sync group (Living Room primary, Kitchen + Bedroom slaves)
+bluesound-controller sync create "Living Room Speakers" "Kitchen Speakers,Bedroom Speakers"
 
-# Break sync group
-bluesound-controller sync break [name]
+# Break all runtime groups
+bluesound-controller sync break
 
-# List all sync groups
+# Refresh discovery, then list groups
+bluesound-controller sync list --scan
+
+# Break groups involving a specific player (primary or slave)
+bluesound-controller sync break "Kitchen Speakers"
+
+# List sync groups and standalone players
 bluesound-controller sync list
 ```
+
+`sync list` reads `/SyncStatus` from each player and shows:
+
+- Combined `group` name on the primary (same name Tidal Connect may advertise)
+- Primary and slave IPs/names
+- Standalone players not currently grouped
+
+Ungrouping always sends `RemoveSlave` to the **primary**, matching BluOS runtime group behavior.
 
 ### Device Diagnostics
 
