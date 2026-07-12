@@ -503,6 +503,7 @@ class BluesoundController:
             sync_xml = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/SyncStatus", timeout=3)
             status_xml = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Status", timeout=3)
             status.uptime = self.get_sys_uptime(sanitized_ip)
+            sync_volume_set = False
             
             if sync_xml:
                 root = self._safe_parse_xml(sync_xml, sanitized_ip)
@@ -515,6 +516,16 @@ class BluesoundController:
                 status.db = root.attrib.get('db', '')
                 status.fw = root.attrib.get('version', '')
                 status.master, status.group, status.slaves = parse_sync_status_root(root)
+
+                # Per-player volume lives on SyncStatus. For synced secondaries,
+                # /Status volume is the group/primary level and must not be trusted.
+                sync_volume = root.attrib.get('volume')
+                if sync_volume not in (None, ''):
+                    try:
+                        status.volume = max(0, min(100, int(sync_volume)))
+                        sync_volume_set = True
+                    except ValueError:
+                        pass
                 
                 batt = root.find('battery')
                 if batt is not None:
@@ -526,7 +537,11 @@ class BluesoundController:
                     if status.status == "offline":
                         status.status = "xml_error"
                     return status
-                status.volume = int(root.findtext('volume', '0'))
+                if not sync_volume_set:
+                    try:
+                        status.volume = max(0, min(100, int(root.findtext('volume', '0'))))
+                    except ValueError:
+                        status.volume = 0
                 status.state = root.findtext('state', 'stop')
                 status.service = root.findtext('service', 'Library/Input')
                 status.track = root.findtext('title1') or root.findtext('title') or ''

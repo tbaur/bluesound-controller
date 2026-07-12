@@ -158,6 +158,25 @@ class TestDeviceInfo:
         
         status = controller.get_device_info("192.168.1.101")
         assert status.master == "192.168.1.100"
+
+    @patch('controller.Network.get')
+    def test_synced_slave_prefers_syncstatus_volume(self, mock_network, controller):
+        """Synced /Status volume is group level — prefer SyncStatus attribute."""
+        sync_xml = (
+            b'<SyncStatus name="Kitchen Speakers" volume="64" db="-8.7">'
+            b'<master port="11000">192.168.1.174</master>'
+            b'</SyncStatus>'
+        )
+        status_xml = (
+            b'<status><volume>15</volume><groupVolume>15</groupVolume>'
+            b'<state>stream</state><title1>Track</title1></status>'
+        )
+        mock_network.side_effect = [sync_xml, status_xml, None]
+
+        status = controller.get_device_info("192.168.1.88")
+        assert status.volume == 64
+        assert status.state == "stream"
+        assert status.track == "Track"
     
     @patch('controller.Network.get')
     def test_get_device_info_roon_service(self, mock_network, controller):
