@@ -298,7 +298,7 @@ class BluesoundController:
         # Check config first before checking cache
         base = self.config.get('UNIFI_CONTROLLER')
         site = self.config.get('UNIFI_SITE', 'default')
-        key = self.config.get('UNIFI_API_KEY')
+        key = self.config.get_unifi_api_key()
         
         if not base or not key:
             return "MISSING_CONFIG"

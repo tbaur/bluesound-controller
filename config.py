@@ -20,13 +20,16 @@ import os
 import json
 import configparser
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from constants import CONFIG_FILE, CONFIG_FILE_JSON, DEFAULT_CONFIG_CONTENT
 from validators import validate_config_value
 from keychain import get_api_key
 
 logger = logging.getLogger("Bluesound")
+
+# Secret config keys must not be returned by Config.get(); use dedicated accessors.
+_SECRET_CONFIG_KEYS = frozenset({"UNIFI_API_KEY"})
 
 
 class Config:
@@ -104,19 +107,28 @@ class Config:
     
     def get(self, key: str, default: Any = None) -> Any:
         """
-        Get configuration value by key.
-        
-        For UNIFI_API_KEY, checks macOS Keychain first, then falls back to config file.
+        Get a non-secret configuration value by key.
+
+        Secrets such as UNIFI_API_KEY are never returned here — use
+        get_unifi_api_key() instead. Keeping secrets out of this method
+        prevents them from being taint-tracked into ordinary log/print sinks.
         """
         key_upper = key.upper()
-        
-        # Special handling for API key: check Keychain first
-        if key_upper == 'UNIFI_API_KEY':
-            keychain_key = get_api_key()
-            if keychain_key:
-                return keychain_key
-            # Fall back to config file
-            return self.data.get(key_upper, default)
-        
+        if key_upper in _SECRET_CONFIG_KEYS:
+            return default
         return self.data.get(key_upper, default)
+
+    def get_unifi_api_key(self) -> Optional[str]:
+        """
+        Return the UniFi API key from macOS Keychain, falling back to config.
+
+        Callers must not log or print the returned value.
+        """
+        keychain_key = get_api_key()
+        if keychain_key:
+            return keychain_key
+        file_key = self.data.get("UNIFI_API_KEY")
+        if file_key:
+            return file_key
+        return None
 

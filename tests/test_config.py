@@ -133,8 +133,10 @@ class TestConfig:
             # Create Config instance after patches are applied
             config = Config()
             # Should get from Keychain, not config file
-            result = config.get('UNIFI_API_KEY')
+            result = config.get_unifi_api_key()
             assert result == "keychain-key", f"Expected 'keychain-key' but got '{result}'"
+            # Ordinary get() must not return secrets (avoids clear-text log taint)
+            assert config.get('UNIFI_API_KEY') is None
     
     def test_get_unifi_api_key_fallback_to_config(self, temp_config_dir):
         """Test that UNIFI_API_KEY falls back to config file if not in Keychain."""
@@ -153,6 +155,18 @@ class TestConfig:
             # Create Config instance after patches are applied
             config = Config()
             # Should fall back to config file
-            result = config.get('UNIFI_API_KEY')
+            result = config.get_unifi_api_key()
             assert result == "config-file-key", f"Expected 'config-file-key' but got '{result}'"
+            assert config.get('UNIFI_API_KEY', 'sentinel') == 'sentinel'
+
+    def test_get_unifi_api_key_missing(self, temp_config_dir):
+        """Test that missing API key returns None from dedicated accessor."""
+        config_file = os.path.join(temp_config_dir, "config.json")
+        with open(config_file, 'w') as f:
+            json.dump({"BLUOS_SERVICE": "_musc._tcp"}, f)
+
+        with patch('config.CONFIG_FILE_JSON', config_file), \
+             patch.object(config_module, 'get_api_key', return_value=None):
+            config = Config()
+            assert config.get_unifi_api_key() is None
 
