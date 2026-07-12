@@ -31,9 +31,33 @@ Thank you for your interest in contributing to Bluesound Controller! This docume
    - Add tests for new functionality
    - Update documentation as needed
    - Ensure all tests pass
-4. **Commit your changes**: Use clear, descriptive commit messages
+4. **Commit / PR title**: Use [Conventional Commits](https://www.conventionalcommits.org)
 5. **Push to your fork**: `git push origin feature/your-feature-name`
 6. **Open a Pull Request**: Provide a clear description of changes
+
+#### Commit / PR titles
+
+PR titles drive automated releases via release-please:
+
+- `feat:` — New feature
+- `fix:` — Bug fix
+- `docs:` — Documentation only
+- `test:` — Test changes
+- `refactor:` — Code refactoring
+- `chore:` / `ci:` — Maintenance (no release)
+
+Example: `feat: add group volume command`
+
+> `CHANGELOG.md` is generated automatically by release-please from your
+> Conventional Commit / PR titles — do not edit it by hand for routine
+> releases. See [RELEASING.md](RELEASING.md).
+
+#### PR checklist
+
+- [ ] Tests added/updated
+- [ ] Tests pass (`pytest`)
+- [ ] Documentation updated if needed
+- [ ] Descriptive PR title (Conventional Commits)
 
 ## Development Setup
 

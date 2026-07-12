@@ -1,0 +1,40 @@
+name: Release
+
+# Fully automated releases via release-please.
+#
+# Flow:
+#   1. Open a PR with a Conventional Commit title (e.g. "feat: …", "fix: …").
+#      The squash-merge commit is what drives the next version.
+#   2. Merge the PR to main. release-please opens/updates a "Release PR" that
+#      bumps the version and writes CHANGELOG.md from commits.
+#   3. Merge that Release PR. release-please tags vX.Y.Z and creates the
+#      GitHub Release. There is no package registry publish for this repo.
+#
+# See RELEASING.md.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # create release commits, tags, and GitHub releases
+      pull-requests: write    # open/update the Release PR
+    steps:
+      - name: Run release-please
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
+        with:
+          token: ${{ github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
