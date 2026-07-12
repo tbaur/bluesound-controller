@@ -9,6 +9,13 @@ From 1.1.1 onward this file is maintained automatically by
 [release-please](https://github.com/googleapis/release-please) based on
 [Conventional Commits](https://www.conventionalcommits.org). See [RELEASING.md](RELEASING.md).
 
+## [1.1.2](https://github.com/tbaur/bluesound-controller/compare/v1.1.1...v1.1.2) (2026-07-12)
+
+
+### Bug Fixes
+
+* **sync:** parse SyncStatus and improve grouped status output ([#24](https://github.com/tbaur/bluesound-controller/issues/24)) ([47e0800](https://github.com/tbaur/bluesound-controller/commit/47e08001234b4996941fec8c578e98ada740186e))
+
 ## [1.1.1](https://github.com/tbaur/bluesound-controller/compare/v1.1.0...v1.1.1) (2026-07-12)
 
 
