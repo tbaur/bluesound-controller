@@ -300,6 +300,7 @@ def main() -> None:
     sync_cmd.add_argument("master", nargs="?", default=None, help="Master device (for create)")
     sync_cmd.add_argument("slaves", nargs="?", default=None, help="Slave devices, comma-separated (for create)")
     sync_cmd.add_argument("target", nargs="?", default=None, help="Target device (for break)")
+    sync_cmd.add_argument("--scan", action="store_true", help="Force network rescan before command")
     
     # Reboot
     reboot_cmd = sub.add_parser("reboot")

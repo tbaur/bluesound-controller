@@ -282,7 +282,8 @@ class TestSyncGroups:
         result = controller.add_sync_slave("192.168.1.100", "192.168.1.101")
         assert result is True
         call_url = mock_network.get.call_args[0][0]
-        assert "Sync?slave=" in call_url
+        assert "AddSlave?slave=" in call_url
+        assert "port=11000" in call_url
     
     @patch('controller.Network')
     def test_remove_sync_slave(self, mock_network, controller):
@@ -291,5 +292,6 @@ class TestSyncGroups:
         result = controller.remove_sync_slave("192.168.1.100", "192.168.1.101")
         assert result is True
         call_url = mock_network.get.call_args[0][0]
-        assert "Sync?remove=" in call_url
+        assert "RemoveSlave?slave=" in call_url
+        assert "port=11000" in call_url
 

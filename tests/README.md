@@ -25,6 +25,7 @@ pytest tests/ --cov=. --cov-report=html  # with coverage report
 | `test_controller.py` | Device info, cache management, XML parsing |
 | `test_controller_coverage.py` | Additional controller edge cases |
 | `test_controller_discovery.py` | Discovery methods (mDNS, LSDP, hybrid) |
+| `test_controller_sync.py` | SyncStatus parsing, break operation planning, AddSlave/RemoveSlave |
 | `test_controller_new_features.py` | Playback, queue, presets, sync, Bluetooth, inputs, reboot |
 | `test_controller_xml.py` | XML bomb protection, depth/size/entity limits |
 | `test_cli_commands.py` | CLI command dispatch and output |

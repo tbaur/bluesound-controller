@@ -181,15 +181,21 @@ class BluesoundCLI:
         """Print device status information."""
         c_play = c_sync = c_idle = 0
         json_out = []
+        displayed = 0
         
         for idx, d in enumerate(devices, 1):
             if d.name == 'Unknown':
                 continue
             
+            displayed += 1
             is_follower = bool(d.master)
+            is_primary = bool(d.slaves)
             
             if is_follower:
                 status_txt = f"{CYAN}🔗 SYNCED{RESET}  "
+                c_sync += 1
+            elif is_primary:
+                status_txt = f"{CYAN}★ PRIMARY{RESET} "
                 c_sync += 1
             elif d.state in ['stream', 'play']:
                 status_txt = f"{GREEN}▶ PLAYING{RESET}"
@@ -222,11 +228,20 @@ class BluesoundCLI:
             if d.battery:
                 sys_line += f"  | Battery: 🔋 {d.battery}%"
             
-            print(f"    Status:{status_txt}  |  Vol: {d.volume}%             |  {'Synced to Leader' if is_follower else f'Source: {d.service}'}")
+            if is_follower:
+                print(self._format_status_row(status_txt, d.volume))
+            else:
+                third_col = f"Source: {d.service}" if d.service else ""
+                print(self._format_status_row(status_txt, d.volume, third_col))
+
+            sync_line = self._format_sync_line(d, devices)
+            if sync_line:
+                print(f"    {sync_line}")
+
             print(f"    {sys_line}")
             print(f"    {DIM}" + "-"*76 + f"{RESET}")
             
-            if not is_follower and d.state in ['stream', 'play', 'connecting']:
+            if d.state in ['stream', 'play', 'connecting']:
                 print(f"    ♫ Track:  {CYAN}{d.track}{RESET}")
                 print(f"    ♫ Artist: {d.artist}")
                 print(f"    ♫ Album:  {d.album}")
@@ -238,10 +253,93 @@ class BluesoundCLI:
             print(json.dumps(json_out, indent=2))
         else:
             print(f"{BLUE}" + "="*80 + f"{RESET}")
-            print(f"Summary: {BOLD}{len(devices)}{RESET} Found | {GREEN}{c_play}{RESET} Playing | {CYAN}{c_sync}{RESET} Synced | {DIM}{c_idle}{RESET} Idle")
+            print(f"Summary: {BOLD}{displayed}{RESET} Found | {GREEN}{c_play}{RESET} Playing | {CYAN}{c_sync}{RESET} Synced | {DIM}{c_idle}{RESET} Idle")
             print(f"{BLUE}" + "="*80 + f"{RESET}")
             print()
     
+    def _format_status_row(
+        self,
+        status_txt: str,
+        volume: int,
+        third_col: str = "",
+    ) -> str:
+        """Format the status row with fixed spacing so Source aligns right."""
+        row = f"    Status:{status_txt}  |  Vol: {volume}%"
+        if third_col:
+            row += f"             |  {third_col}"
+        return row
+
+    def _format_sync_line(self, device: PlayerStatus, devices: List[PlayerStatus]) -> Optional[str]:
+        """Format a dedicated sync line for grouped players."""
+        if device.master:
+            master_name = self._device_name_for_ip(device.master, devices)
+            return f"Sync:   Following {BOLD}{master_name}{RESET}"
+
+        if device.slaves:
+            count = len(device.slaves)
+            label = f"{count} slave{'s' if count != 1 else ''}"
+            return f"Sync:   {label}"
+
+        return None
+
+    def _device_name_for_ip(self, ip: str, devices: List[PlayerStatus]) -> str:
+        """Resolve a player name from IP, falling back to the IP itself."""
+        for device in devices:
+            if device.ip == ip:
+                return device.name
+        return ip
+
+    def _print_sync_groups(self, devices: List[PlayerStatus]) -> None:
+        """Print runtime sync groups and standalone players."""
+        if not devices:
+            if not self.ctl.ips:
+                print(
+                    f"{YELLOW}No devices discovered. "
+                    f"Run `{GREEN}discover{RESET}` or `{GREEN}status --scan{RESET}` first.{RESET}"
+                )
+            else:
+                print(f"{YELLOW}No Bluesound players responded on cached IPs.{RESET}")
+            return
+
+        grouped_ips: set[str] = set()
+        primaries = [
+            device for device in devices
+            if device.slaves or (device.group and not device.master)
+        ]
+
+        if primaries:
+            for primary in sorted(primaries, key=lambda device: device.name.lower()):
+                if primary.slaves:
+                    slave_count = len(primary.slaves)
+                    group_label = (
+                        f"{primary.name} + {slave_count} "
+                        f"slave{'s' if slave_count != 1 else ''}"
+                    )
+                else:
+                    group_label = primary.group or primary.name
+                print(f"\n{BOLD}Group:{RESET} {group_label}")
+                print(f"  Primary: {primary.name} ({CYAN}{primary.ip}{RESET})")
+                grouped_ips.add(primary.ip)
+                for slave_ip in primary.slaves:
+                    slave_name = self._device_name_for_ip(slave_ip, devices)
+                    print(f"  Slave:   {slave_name} ({CYAN}{slave_ip}{RESET})")
+                    grouped_ips.add(slave_ip)
+
+        for device in sorted(devices, key=lambda item: item.name.lower()):
+            if device.master and device.ip not in grouped_ips:
+                master_name = self._device_name_for_ip(device.master, devices)
+                print(f"{device.name} -> {master_name} ({CYAN}{device.master}{RESET}) (Synced)")
+                grouped_ips.add(device.ip)
+
+        standalone = [
+            device for device in devices
+            if device.ip not in grouped_ips
+        ]
+        if standalone:
+            print(f"\n{BOLD}Standalone:{RESET}")
+            for device in standalone:
+                print(f"  {device.name} ({CYAN}{device.ip}{RESET})")
+
     def _format_connection_string(self, d: PlayerStatus) -> str:
         """Format connection status string."""
         if d.unifi and d.unifi.is_wired:
@@ -741,31 +839,38 @@ class BluesoundCLI:
             print()
         
         elif action == 'break':
-            target = args.target
-            targets = self._get_matching_devices(target)
-            
-            if not targets:
+            # argparse puts the first positional name in `master`; accept either slot.
+            target = args.target if args.target is not None else args.master
+            all_devices = self._get_matching_devices(None)
+            targets = self._get_matching_devices(target) if target else None
+
+            if target and not targets:
                 print(f"{RED}No matching devices found.{RESET}")
                 return
-            
+
+            operations = self.ctl.collect_sync_break_operations(all_devices, targets)
+            if not operations:
+                scope = target or "any grouped device"
+                print(f"{YELLOW}No active sync groups found for {scope}.{RESET}")
+                return
+
             print(f"\n{BOLD}Breaking sync groups...{RESET}")
             print("-" * 40)
-            for d in targets:
-                resp = Network.get(f"http://{d.ip}:{BLUOS_PORT}/Sync?remove={d.ip}", timeout=2)
-                state = f"{GREEN}BROKEN{RESET}" if resp else f"{YELLOW}NO SYNC{RESET}"
-                print(f"[{state}] {d.name}")
+            for master_ip, slave_ip, label in operations:
+                success = self.ctl.remove_sync_slave(master_ip, slave_ip)
+                state = f"{GREEN}BROKEN{RESET}" if success else f"{RED}ERROR{RESET}"
+                print(f"[{state}] {label}")
             print()
         
         elif action == 'list':
+            if not self.ctl.ips:
+                print(f"{RED}Error: No IPs found (Try `discover` or `status --scan`).{RESET}\n")
+                return
+
             print(f"\n{BOLD}Sync Groups:{RESET}")
             print("-" * 60)
             all_devs = self._get_matching_devices(None)
-            
-            for d in all_devs:
-                if d.master:
-                    print(f"{d.name} -> {d.master} (Synced)")
-                else:
-                    print(f"{d.name} (Standalone)")
+            self._print_sync_groups(all_devs)
             print()
     
     def keychain(self, args) -> None:

@@ -150,8 +150,8 @@ class TestDeviceInfo:
     
     @patch('controller.Network.get')
     def test_get_device_info_with_master(self, mock_network, controller):
-        """Test device info with sync master."""
-        sync_xml = b'<sync name="Slave" master="192.168.1.100"/>'
+        """Test device info with sync master child element."""
+        sync_xml = b'<SyncStatus name="Slave"><master>192.168.1.100</master></SyncStatus>'
         status_xml = b'<status><volume>50</volume></status>'
         
         mock_network.side_effect = [sync_xml, status_xml, None]
