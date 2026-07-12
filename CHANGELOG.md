@@ -9,6 +9,13 @@ From 1.1.1 onward this file is maintained automatically by
 [release-please](https://github.com/googleapis/release-please) based on
 [Conventional Commits](https://www.conventionalcommits.org). See [RELEASING.md](RELEASING.md).
 
+## [1.1.3](https://github.com/tbaur/bluesound-controller/compare/v1.1.2...v1.1.3) (2026-07-12)
+
+
+### Bug Fixes
+
+* **security:** isolate UniFi API key from Config.get ([#26](https://github.com/tbaur/bluesound-controller/issues/26)) ([dfdaa94](https://github.com/tbaur/bluesound-controller/commit/dfdaa948836e448cfc72e3763b725791caa393ad))
+
 ## [1.1.2](https://github.com/tbaur/bluesound-controller/compare/v1.1.1...v1.1.2) (2026-07-12)
 
 
