@@ -9,6 +9,13 @@ From 1.1.1 onward this file is maintained automatically by
 [release-please](https://github.com/googleapis/release-please) based on
 [Conventional Commits](https://www.conventionalcommits.org). See [RELEASING.md](RELEASING.md).
 
+## [1.1.1](https://github.com/tbaur/bluesound-controller/compare/v1.1.0...v1.1.1) (2026-07-12)
+
+
+### Bug Fixes
+
+* **license:** restore canonical Apache 2.0 LICENSE text ([418aa25](https://github.com/tbaur/bluesound-controller/commit/418aa250a6b9910bbdddfc6d92c24b54e078db27))
+
 ## [1.1.0] - 2026-06-24
 
 ### Changed
