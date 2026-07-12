@@ -866,11 +866,11 @@ class BluesoundCLI:
             print("-" * 40)
             
             for slave_name in slave_names:
-                slave = devices.get(slave_name.strip().lower())
-                if slave:
-                    res = self.ctl.add_sync_slave(master.ip, slave.ip)
+                slave_dev = devices.get(slave_name.strip().lower())
+                if slave_dev:
+                    res = self.ctl.add_sync_slave(master.ip, slave_dev.ip)
                     state = f"{GREEN}ADDED{RESET}" if res else f"{RED}ERROR{RESET}"
-                    print(f"[{state}] {slave.name} -> {master.name}")
+                    print(f"[{state}] {slave_dev.name} -> {master.name}")
                 else:
                     print(f"{YELLOW}Slave '{slave_name}' not found.{RESET}")
             print()
