@@ -9,6 +9,13 @@ From 1.1.1 onward this file is maintained automatically by
 [release-please](https://github.com/googleapis/release-please) based on
 [Conventional Commits](https://www.conventionalcommits.org). See [RELEASING.md](RELEASING.md).
 
+## [1.2.1](https://github.com/tbaur/bluesound-controller/compare/v1.2.0...v1.2.1) (2026-07-12)
+
+
+### Bug Fixes
+
+* **api:** align BluOS queue/inputs/bluetooth with Custom Integration API v1.7 ([#32](https://github.com/tbaur/bluesound-controller/issues/32)) ([7e3a002](https://github.com/tbaur/bluesound-controller/commit/7e3a002094cb49b9756f6541ee75625e44025aeb))
+
 ## [1.2.0](https://github.com/tbaur/bluesound-controller/compare/v1.1.4...v1.2.0) (2026-07-12)
 
 
