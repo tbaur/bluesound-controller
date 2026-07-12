@@ -9,6 +9,13 @@ From 1.1.1 onward this file is maintained automatically by
 [release-please](https://github.com/googleapis/release-please) based on
 [Conventional Commits](https://www.conventionalcommits.org). See [RELEASING.md](RELEASING.md).
 
+## [1.2.0](https://github.com/tbaur/bluesound-controller/compare/v1.1.4...v1.2.0) (2026-07-12)
+
+
+### Features
+
+* **sync:** enable-all group + stop after break ([#30](https://github.com/tbaur/bluesound-controller/issues/30)) ([1cea2d7](https://github.com/tbaur/bluesound-controller/commit/1cea2d7fc49e6b4633a07c941e9a7b171d13ae9a))
+
 ## [1.1.4](https://github.com/tbaur/bluesound-controller/compare/v1.1.3...v1.1.4) (2026-07-12)
 
 
