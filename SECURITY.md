@@ -24,11 +24,15 @@ When using this tool:
 
 **Input validation** — all external inputs (IPs, hostnames, volumes, timeouts, config values) are validated at boundaries with type checking, length limits, format validation, and shell metacharacter rejection.
 
+**Secrets access** — `Config.get()` never returns secrets. UniFi API keys are retrieved only via `Config.get_unifi_api_key()` (Keychain first, then config file) and must not be logged or printed.
+
 **XML parsing** — protected against XML bombs and DoS: size limits (1MB), depth limits (20 levels), element count limits (10K), attribute limits, entity expansion prevention (XXE).
 
 **Subprocess calls** — all calls use `shell=False` with list arguments, explicit timeouts (2–10s), and input validation before execution. No user input is passed to a shell.
 
 **File security** — config files set to `0600`, cache directory to `0700`. Writes are atomic to prevent corruption.
+
+**Network logging** — request URLs are redacted (userinfo stripped) before logging; request headers are never logged.
 
 ## Known Considerations
 

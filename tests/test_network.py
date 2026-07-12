@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import patch, MagicMock, Mock
 from urllib.error import URLError, HTTPError
 
-from network import Network
+from network import Network, _url_for_log
 
 
 class TestNetwork:
@@ -107,4 +107,25 @@ class TestNetwork:
         call_args = mock_urlopen.call_args
         assert 'timeout' in call_args.kwargs
         assert call_args.kwargs['timeout'] == 10
+
+    def test_url_for_log_strips_userinfo(self):
+        """Credentials in URL userinfo must not appear in log-safe form."""
+        assert _url_for_log("https://user:s3cret@controller.local/api") == (
+            "https://controller.local/api"
+        )
+        assert _url_for_log("http://192.168.1.1:11000/Status") == (
+            "http://192.168.1.1:11000/Status"
+        )
+        redacted = _url_for_log("https://token@host.example:8443/path?x=1")
+        assert "token" not in redacted
+        assert "host.example:8443" in redacted
+
+    @patch('network.logger')
+    def test_invalid_scheme_log_does_not_echo_credentials(self, mock_logger):
+        """Invalid-scheme rejection logs a redacted URL only."""
+        Network.get("ftp://user:password@evil.example/secret")
+        mock_logger.warning.assert_called()
+        logged = " ".join(str(a) for a in mock_logger.warning.call_args[0])
+        assert "password" not in logged
+        assert "user" not in logged
 

@@ -29,6 +29,24 @@ from utils import retry_with_backoff
 logger = logging.getLogger("Bluesound")
 
 
+def _url_for_log(url: str) -> str:
+    """
+    Return a log-safe URL with userinfo credentials stripped.
+
+    Never log request headers — callers may pass secrets (e.g. X-API-KEY).
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+        if not parts.username and not parts.password:
+            return url
+        hostname = parts.hostname or ""
+        if parts.port:
+            hostname = f"{hostname}:{parts.port}"
+        return urllib.parse.urlunsplit(parts._replace(netloc=hostname))
+    except ValueError:
+        return "<redacted-url>"
+
+
 class Network:
     """
     Centralized network I/O operations.
@@ -72,7 +90,9 @@ class Network:
             # Read with size limit to prevent memory exhaustion
             content = response.read(MAX_XML_SIZE + 1)
             if len(content) > MAX_XML_SIZE:
-                logger.warning(f"Payload exceeded size limit ({url})")
+                logger.warning(
+                    "Payload exceeded size limit (%s)", _url_for_log(url)
+                )
                 return None
             return bytes(content)
     
@@ -96,9 +116,11 @@ class Network:
         Returns:
             Response content as bytes, or None on error
         """
+        log_url = _url_for_log(url)
+
         # Validate URL scheme (only http/https allowed)
         if not url.startswith(('http://', 'https://')):
-            logger.warning(f"Invalid URL scheme: {url}")
+            logger.warning("Invalid URL scheme: %s", log_url)
             return None
         
         # Encode data if provided
@@ -110,14 +132,14 @@ class Network:
             return cls._request_impl(url, method, encoded_data, headers, timeout)
         except urllib.error.HTTPError as e:
             # Don't retry on HTTP errors (4xx, 5xx) - these are not transient
-            logger.debug(f"HTTP error ({url}): {e.code} {e.reason}")
+            logger.debug("HTTP error (%s): %s %s", log_url, e.code, e.reason)
             return None
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
             # These are retried by the decorator, but if all retries fail, return None
-            logger.debug(f"Network error after retries ({url}): {e}")
+            logger.debug("Network error after retries (%s): %s", log_url, e)
             return None
         except Exception as e:
-            logger.debug(f"Unexpected error ({url}): {e}")
+            logger.debug("Unexpected error (%s): %s", log_url, e)
             return None
     
     @classmethod
