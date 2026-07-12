@@ -84,52 +84,45 @@ class TestQueueManagement:
     
     @patch('controller.Network')
     def test_get_queue(self, mock_network, controller):
-        """Test getting queue."""
+        """Test getting queue via v1.7 /Playlist."""
         xml_content = b"""<?xml version="1.0"?>
-        <queue>
-            <item>
+        <playlist length="1" id="2">
+            <song id="0">
                 <title>Test Song</title>
-                <artist>Test Artist</artist>
-                <album>Test Album</album>
-            </item>
-        </queue>"""
+                <art>Test Artist</art>
+                <alb>Test Album</alb>
+                <service>Library</service>
+            </song>
+        </playlist>"""
         mock_network.get.return_value = xml_content
-        
-        with patch.object(controller, '_safe_parse_xml') as mock_parse:
-            mock_root = MagicMock()
-            mock_item = MagicMock()
-            mock_item.findtext.side_effect = lambda x, default='': {
-                'title': 'Test Song',
-                'artist': 'Test Artist',
-                'album': 'Test Album',
-                'image': '',
-                'service': ''
-            }.get(x, default)
-            mock_root.findall.return_value = [mock_item]
-            mock_parse.return_value = mock_root
-            
-            result = controller.get_queue("192.168.1.100")
-            assert result is not None
-            assert result['count'] == 1
+
+        result = controller.get_queue("192.168.1.100")
+        assert result is not None
+        assert result["count"] == 1
+        assert result["items"][0]["title"] == "Test Song"
+        assert result["items"][0]["artist"] == "Test Artist"
+        call_url = mock_network.get.call_args[0][0]
+        assert "/Playlist?" in call_url
     
     @patch('controller.Network')
     def test_clear_queue(self, mock_network, controller):
-        """Test clearing queue."""
+        """Test clearing queue via /Clear."""
         mock_network.get.return_value = b"OK"
         result = controller.clear_queue("192.168.1.100")
         assert result is True
         call_url = mock_network.get.call_args[0][0]
-        assert "clear=1" in call_url
+        assert call_url.endswith("/Clear")
     
     @patch('controller.Network')
     def test_move_queue_item(self, mock_network, controller):
-        """Test moving queue item."""
-        mock_network.get.return_value = b"OK"
+        """Test moving queue item via /Move."""
+        mock_network.get.return_value = b"<moved>moved</moved>"
         result = controller.move_queue_item("192.168.1.100", 3, 1)
         assert result is True
         call_url = mock_network.get.call_args[0][0]
-        assert "move=3" in call_url
-        assert "to=1" in call_url
+        assert "/Move?" in call_url
+        assert "old=3" in call_url
+        assert "new=1" in call_url
 
 
 class TestInputManagement:
@@ -144,40 +137,40 @@ class TestInputManagement:
     
     @patch('controller.Network')
     def test_get_inputs(self, mock_network, controller):
-        """Test getting inputs."""
+        """Test getting inputs from capture settings."""
         xml_content = b"""<?xml version="1.0"?>
-        <inputs>
-            <input selected="1">
-                <name>Bluetooth</name>
-                <type>bluetooth</type>
-            </input>
-        </inputs>"""
+        <settings pageId="capture" schemaVersion="32">
+          <menuGroup id="capture" displayName="Customize sources">
+            <setting id="bluetoothAutoplay" name="bluetoothAutoplay" value="3"></setting>
+            <menuGroup id="capture-input0" displayName="Analog Input" icon="/images/capture/ic_analoginput.png"></menuGroup>
+            <menuGroup id="capture-input1" displayName="Optical Input" icon="/images/capture/ic_opticalinput.png"></menuGroup>
+          </menuGroup>
+        </settings>"""
         mock_network.get.return_value = xml_content
-        
-        with patch.object(controller, '_safe_parse_xml') as mock_parse:
-            mock_root = MagicMock()
-            mock_input = MagicMock()
-            mock_input.findtext.side_effect = lambda x, default='': {
-                'name': 'Bluetooth',
-                'type': 'bluetooth'
-            }.get(x, default)
-            mock_input.get.return_value = '1'
-            mock_root.findall.return_value = [mock_input]
-            mock_parse.return_value = mock_root
-            
-            result = controller.get_inputs("192.168.1.100")
-            assert result is not None
-            assert len(result) == 1
-            assert result[0]['name'] == 'Bluetooth'
+
+        result = controller.get_inputs("192.168.1.100")
+        assert result is not None
+        assert len(result) == 2
+        assert result[0]["name"] == "Analog Input"
+        assert result[0]["id"] == "analog-1"
+        assert result[1]["id"] == "spdif-1"
+        call_url = mock_network.get.call_args[0][0]
+        assert "Settings?id=capture" in call_url
     
     @patch('controller.Network')
     def test_set_input(self, mock_network, controller):
-        """Test setting input."""
-        mock_network.get.return_value = b"OK"
-        result = controller.set_input("192.168.1.100", "Bluetooth")
+        """Test setting input via inputTypeIndex."""
+        capture_xml = b"""<?xml version="1.0"?>
+        <settings pageId="capture" schemaVersion="32">
+          <menuGroup id="capture">
+            <menuGroup id="capture-input0" displayName="Analog Input" icon="/images/capture/ic_analoginput.png"></menuGroup>
+          </menuGroup>
+        </settings>"""
+        mock_network.get.side_effect = [capture_xml, b"<state>stream</state>"]
+        result = controller.set_input("192.168.1.100", "Analog Input")
         assert result is True
         call_url = mock_network.get.call_args[0][0]
-        assert "AudioInput" in call_url
+        assert "Play?inputTypeIndex=analog-1" in call_url
 
 
 class TestBluetoothControl:
@@ -192,20 +185,19 @@ class TestBluetoothControl:
     
     @patch('controller.Network')
     def test_get_bluetooth_mode(self, mock_network, controller):
-        """Test getting Bluetooth mode."""
+        """Test getting Bluetooth mode from capture settings."""
         xml_content = b"""<?xml version="1.0"?>
-        <audioModes>
-            <bluetoothAutoplay>1</bluetoothAutoplay>
-        </audioModes>"""
+        <settings pageId="capture" schemaVersion="32">
+          <menuGroup id="capture">
+            <setting id="bluetoothAutoplay" name="bluetoothAutoplay" value="1" description="Automatic"></setting>
+          </menuGroup>
+        </settings>"""
         mock_network.get.return_value = xml_content
-        
-        with patch.object(controller, '_safe_parse_xml') as mock_parse:
-            mock_root = MagicMock()
-            mock_root.findtext.return_value = '1'
-            mock_parse.return_value = mock_root
-            
-            result = controller.get_bluetooth_mode("192.168.1.100")
-            assert result == "Automatic"
+
+        result = controller.get_bluetooth_mode("192.168.1.100")
+        assert result == "Automatic"
+        call_url = mock_network.get.call_args[0][0]
+        assert "Settings?id=capture" in call_url
     
     @patch('controller.Network')
     def test_set_bluetooth_mode(self, mock_network, controller):
