@@ -95,8 +95,9 @@ class BluesoundCLI:
 
         print(f"{BOLD}Presets & Sync:{RESET}")
         print(f"  {GREEN}presets{RESET}  {DIM}[name] [id]{RESET}               List or play a preset")
+        print(f"  {GREEN}sync{RESET}    {DIM}enable <primary>{RESET}           Group all others under primary")
         print(f"  {GREEN}sync{RESET}    {DIM}create <master> <slaves>{RESET}   Create sync group")
-        print(f"  {GREEN}sync{RESET}    {DIM}break [name]{RESET}               Break sync group")
+        print(f"  {GREEN}sync{RESET}    {DIM}break [name]{RESET}               Break sync group (stops freed players)")
         print(f"  {GREEN}sync{RESET}    {DIM}list{RESET}                       Show sync groups\n")
 
         print(f"{BOLD}System:{RESET}")
@@ -813,7 +814,43 @@ class BluesoundCLI:
         """Manage sync groups."""
         action = args.action
         
-        if action == 'create':
+        if action == 'enable':
+            primary_name = args.master
+            if not primary_name:
+                print(f"{RED}Usage: sync enable <primary-name>{RESET}")
+                return
+
+            all_devices = self._get_matching_devices(None)
+            devices = {d.name.lower(): d for d in all_devices}
+            master = devices.get(primary_name.lower())
+            if not master:
+                # Allow substring match like other commands
+                matches = [d for d in all_devices if primary_name.lower() in d.name.lower()]
+                if len(matches) == 1:
+                    master = matches[0]
+                elif len(matches) > 1:
+                    print(f"{RED}Primary '{primary_name}' is ambiguous:{RESET}")
+                    for d in matches:
+                        print(f"  - {d.name}")
+                    return
+                else:
+                    print(f"{RED}Primary device '{primary_name}' not found.{RESET}")
+                    return
+
+            slaves = [d for d in all_devices if d.ip != master.ip]
+            if not slaves:
+                print(f"{YELLOW}No other players to group under {master.name}.{RESET}")
+                return
+
+            print(f"\n{BOLD}Enabling runtime group: {master.name} leads {len(slaves)} player(s)...{RESET}")
+            print("-" * 40)
+            for slave in sorted(slaves, key=lambda d: d.name.lower()):
+                res = self.ctl.add_sync_slave(master.ip, slave.ip)
+                state = f"{GREEN}ADDED{RESET}" if res else f"{RED}ERROR{RESET}"
+                print(f"[{state}] {slave.name} -> {master.name}")
+            print()
+
+        elif action == 'create':
             master_name = args.master
             slave_names = args.slaves.split(',') if args.slaves else []
             
@@ -829,11 +866,11 @@ class BluesoundCLI:
             print("-" * 40)
             
             for slave_name in slave_names:
-                slave = devices.get(slave_name.strip().lower())
-                if slave:
-                    res = self.ctl.add_sync_slave(master.ip, slave.ip)
+                slave_dev = devices.get(slave_name.strip().lower())
+                if slave_dev:
+                    res = self.ctl.add_sync_slave(master.ip, slave_dev.ip)
                     state = f"{GREEN}ADDED{RESET}" if res else f"{RED}ERROR{RESET}"
-                    print(f"[{state}] {slave.name} -> {master.name}")
+                    print(f"[{state}] {slave_dev.name} -> {master.name}")
                 else:
                     print(f"{YELLOW}Slave '{slave_name}' not found.{RESET}")
             print()
@@ -856,10 +893,22 @@ class BluesoundCLI:
 
             print(f"\n{BOLD}Breaking sync groups...{RESET}")
             print("-" * 40)
+            primary_ips: set[str] = set()
             for master_ip, slave_ip, label in operations:
                 success = self.ctl.remove_sync_slave(master_ip, slave_ip)
                 state = f"{GREEN}BROKEN{RESET}" if success else f"{RED}ERROR{RESET}"
                 print(f"[{state}] {label}")
+                if success:
+                    # Clear leftover AirPlay/capture on freed secondaries.
+                    self.ctl.stop(slave_ip)
+                    primary_ips.add(master_ip)
+
+            for master_ip in sorted(primary_ips):
+                primary = self.ctl.get_device_info(master_ip)
+                if not primary.slaves:
+                    self.ctl.stop(master_ip)
+                    name = primary.name if primary.name != "Unknown" else master_ip
+                    print(f"[{GREEN}STOPPED{RESET}] {name} (cleared capture)")
             print()
         
         elif action == 'list':

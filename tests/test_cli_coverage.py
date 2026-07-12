@@ -234,9 +234,22 @@ class TestCLICoverage:
                 mock_executor_class.return_value = mock_executor
                 
                 with patch.object(cli.ctl, 'remove_sync_slave', return_value=True) as mock_remove:
-                    with patch('builtins.print'):
-                        cli.sync(args)
+                    with patch.object(cli.ctl, 'stop', return_value=True) as mock_stop:
+                        with patch.object(
+                            cli.ctl,
+                            'get_device_info',
+                            return_value=PlayerStatus(
+                                ip="192.168.1.100",
+                                name="Living Room",
+                                slaves=[],
+                            ),
+                        ):
+                            with patch('builtins.print'):
+                                cli.sync(args)
                     mock_remove.assert_called_once_with("192.168.1.100", "192.168.1.101")
+                    assert mock_stop.call_count == 2
+                    mock_stop.assert_any_call("192.168.1.101")
+                    mock_stop.assert_any_call("192.168.1.100")
     
     def test_sync_break_with_master_arg(self, cli):
         """Test sync break accepts device name in master positional arg."""
@@ -250,9 +263,39 @@ class TestCLICoverage:
 
         with patch.object(cli, '_get_matching_devices', side_effect=[[primary, slave], [slave]]):
             with patch.object(cli.ctl, 'remove_sync_slave', return_value=True) as mock_remove:
+                with patch.object(cli.ctl, 'stop', return_value=True):
+                    with patch.object(
+                        cli.ctl,
+                        'get_device_info',
+                        return_value=PlayerStatus(
+                            ip="192.168.1.100",
+                            name="Living Room",
+                            slaves=[],
+                        ),
+                    ):
+                        with patch('builtins.print'):
+                            cli.sync(args)
+                mock_remove.assert_called_once_with("192.168.1.100", "192.168.1.101")
+
+    def test_sync_enable_groups_all_others(self, cli):
+        """sync enable adds every other player under the primary."""
+        primary = PlayerStatus(ip="192.168.1.100", name="Living Room Speakers")
+        kitchen = PlayerStatus(ip="192.168.1.101", name="Kitchen Speakers")
+        patio = PlayerStatus(ip="192.168.1.102", name="Patio Speakers")
+
+        args = MagicMock()
+        args.action = 'enable'
+        args.master = 'Living Room Speakers'
+        args.slaves = None
+        args.target = None
+
+        with patch.object(cli, '_get_matching_devices', return_value=[primary, kitchen, patio]):
+            with patch.object(cli.ctl, 'add_sync_slave', return_value=True) as mock_add:
                 with patch('builtins.print'):
                     cli.sync(args)
-                mock_remove.assert_called_once_with("192.168.1.100", "192.168.1.101")
+                assert mock_add.call_count == 2
+                mock_add.assert_any_call("192.168.1.100", "192.168.1.101")
+                mock_add.assert_any_call("192.168.1.100", "192.168.1.102")
 
     def test_sync_list_no_ips(self, cli):
         """Test sync list warns when no devices discovered."""

@@ -296,8 +296,17 @@ def main() -> None:
     
     # Sync groups
     sync_cmd = sub.add_parser("sync")
-    sync_cmd.add_argument("action", choices=["create", "break", "list"])
-    sync_cmd.add_argument("master", nargs="?", default=None, help="Master device (for create)")
+    sync_cmd.add_argument(
+        "action",
+        choices=["enable", "create", "break", "list"],
+        help="enable: group all others under primary; create/break/list as before",
+    )
+    sync_cmd.add_argument(
+        "master",
+        nargs="?",
+        default=None,
+        help="Primary/master device name (enable, create) or break target",
+    )
     sync_cmd.add_argument("slaves", nargs="?", default=None, help="Slave devices, comma-separated (for create)")
     sync_cmd.add_argument("target", nargs="?", default=None, help="Target device (for break)")
     sync_cmd.add_argument("--scan", action="store_true", help="Force network rescan before command")
