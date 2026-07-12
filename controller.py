@@ -615,97 +615,196 @@ class BluesoundController:
         res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Back", timeout=2)
         return res is not None
     
+    # BluOS Custom Integration API v1.7 — play queue is /Playlist; inputs via
+    # /Settings?id=capture&schemaVersion=32; Bluetooth set via /audiomodes.
+    _INPUT_HINTS = (
+        ("hdmi arc", "arc"),
+        ("earc", "earc"),
+        ("optical", "spdif"),
+        ("analog", "analog"),
+        ("line in", "analog"),
+        ("coax", "coax"),
+        ("phono", "phono"),
+        ("vinyl", "phono"),
+        ("computer", "computer"),
+        ("aes", "aesebu"),
+        ("balanced", "balanced"),
+        ("microphone", "microphone"),
+        ("bluetooth", "bluetooth"),
+    )
+    _ICON_HINTS = (
+        ("ic_optical", "spdif"),
+        ("ic_analog", "analog"),
+        ("ic_tv", "arc"),
+        ("ic_hdmi", "arc"),
+        ("ic_phono", "phono"),
+        ("ic_coax", "coax"),
+        ("ic_bluetooth", "bluetooth"),
+    )
+    _BT_MODE_MAP = {"0": "Manual", "1": "Automatic", "2": "Guest", "3": "Disabled"}
+
+    @classmethod
+    def _input_type_from_capture(cls, display_name: str, icon: str) -> str:
+        """Map capture menu labels/icons to v1.7 inputTypeIndex type tokens."""
+        name = (display_name or "").lower()
+        for needle, type_name in cls._INPUT_HINTS:
+            if needle in name:
+                return type_name
+        icon_l = (icon or "").lower()
+        for needle, type_name in cls._ICON_HINTS:
+            if needle in icon_l:
+                return type_name
+        return "analog"
+
     def get_queue(self, ip: str) -> Optional[Dict]:
-        """Get queue information."""
+        """Get play queue (BluOS v1.7: GET /Playlist)."""
         sanitized_ip = sanitize_ip(ip)
         if not sanitized_ip:
             return None
-        res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Queue", timeout=3)
+        res = Network.get(
+            f"http://{sanitized_ip}:{BLUOS_PORT}/Playlist?start=0&end=500",
+            timeout=3,
+        )
         if res:
             try:
                 root = self._safe_parse_xml(res, sanitized_ip)
-                if root:
+                if root is not None:
                     queue_items = []
-                    for item in root.findall('item'):
+                    for song in root.findall("song"):
                         queue_items.append({
-                            'title': item.findtext('title', ''),
-                            'artist': item.findtext('artist', ''),
-                            'album': item.findtext('album', ''),
-                            'image': item.findtext('image', ''),
-                            'service': item.findtext('service', '')
+                            "id": song.get("id", ""),
+                            "title": song.findtext("title", ""),
+                            "artist": song.findtext("art", "") or song.findtext("artist", ""),
+                            "album": song.findtext("alb", "") or song.findtext("album", ""),
+                            "image": song.findtext("image", ""),
+                            "service": song.findtext("service", ""),
                         })
-                    return {'items': queue_items, 'count': len(queue_items)}
+                    length_attr = root.attrib.get("length")
+                    length_el = root.findtext("length")
+                    try:
+                        count = int(length_attr if length_attr is not None else (length_el if length_el is not None else len(queue_items)))
+                    except ValueError:
+                        count = len(queue_items)
+                    return {"items": queue_items, "count": count}
             except Exception as e:
                 logger.debug(f"Queue parse error for {sanitized_ip}: {e}")
         return None
-    
+
     def clear_queue(self, ip: str) -> bool:
-        """Clear the queue."""
+        """Clear the play queue (BluOS v1.7: GET /Clear)."""
         sanitized_ip = sanitize_ip(ip)
         if not sanitized_ip:
             return False
         get_rate_limiter().wait_if_needed(sanitized_ip)
-        res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Queue?clear=1", timeout=2)
+        res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Clear", timeout=2)
         return res is not None
-    
+
     def move_queue_item(self, ip: str, from_index: int, to_index: int) -> bool:
-        """Move queue item from one position to another."""
+        """Move a play-queue track (BluOS v1.7: GET /Move?old=&new=)."""
         sanitized_ip = sanitize_ip(ip)
         if not sanitized_ip:
             return False
         get_rate_limiter().wait_if_needed(sanitized_ip)
-        res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Queue?move={from_index}&to={to_index}", timeout=2)
+        res = Network.get(
+            f"http://{sanitized_ip}:{BLUOS_PORT}/Move?old={from_index}&new={to_index}",
+            timeout=2,
+        )
         return res is not None
-    
+
     def get_inputs(self, ip: str) -> Optional[List[Dict]]:
-        """Get available audio inputs."""
+        """List capture inputs (BluOS v1.7: GET /Settings?id=capture&schemaVersion=32)."""
         sanitized_ip = sanitize_ip(ip)
         if not sanitized_ip:
             return None
-        res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/AudioInputs", timeout=3)
+        res = Network.get(
+            f"http://{sanitized_ip}:{BLUOS_PORT}/Settings?id=capture&schemaVersion=32",
+            timeout=3,
+        )
         if res:
             try:
                 root = self._safe_parse_xml(res, sanitized_ip)
-                if root:
-                    inputs = []
-                    for inp in root.findall('input'):
-                        inputs.append({
-                            'name': inp.findtext('name', ''),
-                            'type': inp.findtext('type', ''),
-                            'selected': inp.get('selected', '0') == '1'
-                        })
-                    return inputs
+                if root is None:
+                    return None
+                inputs: List[Dict] = []
+                type_counts: Dict[str, int] = {}
+                for group in root.iter("menuGroup"):
+                    group_id = group.get("id", "")
+                    if not group_id.startswith("capture-") or group_id == "capture":
+                        continue
+                    if "bluetooth" in group_id.lower():
+                        continue
+                    name = group.get("displayName", "") or group_id
+                    icon = group.get("icon", "")
+                    type_name = self._input_type_from_capture(name, icon)
+                    type_counts[type_name] = type_counts.get(type_name, 0) + 1
+                    type_index = f"{type_name}-{type_counts[type_name]}"
+                    inputs.append({
+                        "name": name,
+                        "type": type_name,
+                        "id": type_index,
+                        "selected": False,
+                    })
+                return inputs
             except Exception as e:
                 logger.debug(f"Inputs parse error for {sanitized_ip}: {e}")
         return None
-    
+
     def set_input(self, ip: str, input_name: str) -> bool:
-        """Set audio input."""
+        """Select an input by display name or inputTypeIndex (BluOS v1.7: /Play?inputTypeIndex=)."""
         sanitized_ip = sanitize_ip(ip)
         if not sanitized_ip:
             return False
+        target = (input_name or "").strip()
+        if not target:
+            return False
+        type_index = target
+        # Resolve display name / type token to inputTypeIndex when needed.
+        if "-" not in target or not any(ch.isdigit() for ch in target.split("-")[-1]):
+            inputs = self.get_inputs(sanitized_ip) or []
+            lowered = target.lower()
+            match = next(
+                (
+                    inp
+                    for inp in inputs
+                    if inp.get("id", "").lower() == lowered
+                    or inp.get("name", "").lower() == lowered
+                    or inp.get("type", "").lower() == lowered
+                ),
+                None,
+            )
+            if not match:
+                return False
+            type_index = match["id"]
         get_rate_limiter().wait_if_needed(sanitized_ip)
-        encoded_name = urllib.parse.quote(input_name)
-        res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/AudioInput?input={encoded_name}", timeout=2)
+        encoded = urllib.parse.quote(type_index, safe="-")
+        res = Network.get(
+            f"http://{sanitized_ip}:{BLUOS_PORT}/Play?inputTypeIndex={encoded}",
+            timeout=2,
+        )
         return res is not None
-    
+
     def get_bluetooth_mode(self, ip: str) -> Optional[str]:
-        """Get current Bluetooth mode."""
+        """Read Bluetooth mode from capture settings (v1.7 has no /AudioModes GET)."""
         sanitized_ip = sanitize_ip(ip)
         if not sanitized_ip:
             return None
-        res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/AudioModes", timeout=3)
+        res = Network.get(
+            f"http://{sanitized_ip}:{BLUOS_PORT}/Settings?id=capture&schemaVersion=32",
+            timeout=3,
+        )
         if res:
             try:
                 root = self._safe_parse_xml(res, sanitized_ip)
-                if root:
-                    mode = root.findtext('bluetoothAutoplay', '')
-                    mode_map = {'0': 'Manual', '1': 'Automatic', '2': 'Guest', '3': 'Disabled'}
-                    return mode_map.get(mode, 'Unknown')
+                if root is None:
+                    return None
+                for setting in root.iter("setting"):
+                    if setting.get("id") == "bluetoothAutoplay" or setting.get("name") == "bluetoothAutoplay":
+                        mode = setting.get("value", "")
+                        return self._BT_MODE_MAP.get(mode, "Unknown")
             except Exception as e:
                 logger.debug(f"Bluetooth mode parse error for {sanitized_ip}: {e}")
         return None
-    
+
     def set_bluetooth_mode(self, ip: str, mode: int) -> bool:
         """Set Bluetooth mode (0=Manual, 1=Automatic, 2=Guest, 3=Disabled)."""
         sanitized_ip = sanitize_ip(ip)
@@ -714,7 +813,10 @@ class BluesoundController:
         if mode not in (0, 1, 2, 3):
             return False
         get_rate_limiter().wait_if_needed(sanitized_ip)
-        res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/audiomodes?bluetoothAutoplay={mode}", timeout=2)
+        res = Network.get(
+            f"http://{sanitized_ip}:{BLUOS_PORT}/audiomodes?bluetoothAutoplay={mode}",
+            timeout=2,
+        )
         return res is not None
     
     def soft_reboot(self, ip: str) -> bool:
@@ -736,7 +838,7 @@ class BluesoundController:
         if res:
             try:
                 root = self._safe_parse_xml(res, sanitized_ip)
-                if root:
+                if root is not None:
                     presets = []
                     for preset in root.findall('preset'):
                         presets.append({

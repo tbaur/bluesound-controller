@@ -727,8 +727,9 @@ class BluesoundCLI:
                     print(f"\n{BOLD}Available Inputs for {tgt_device.name}:{RESET}")
                     print("-" * 60)
                     for inp in inputs:
-                        marker = f"{GREEN}●{RESET}" if inp['selected'] else " "
-                        print(f"{marker} {inp['name']} ({inp['type']})")
+                        marker = f"{GREEN}●{RESET}" if inp.get('selected') else " "
+                        type_index = inp.get('id') or inp.get('type') or ''
+                        print(f"{marker} {inp['name']} [{type_index}]")
                 else:
                     print(f"{YELLOW}No input data available for {tgt_device.name}.{RESET}")
                 if len(targets) > 1:
