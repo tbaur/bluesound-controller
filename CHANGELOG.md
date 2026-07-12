@@ -9,6 +9,13 @@ From 1.1.1 onward this file is maintained automatically by
 [release-please](https://github.com/googleapis/release-please) based on
 [Conventional Commits](https://www.conventionalcommits.org). See [RELEASING.md](RELEASING.md).
 
+## [1.1.4](https://github.com/tbaur/bluesound-controller/compare/v1.1.3...v1.1.4) (2026-07-12)
+
+
+### Bug Fixes
+
+* **sync:** prefer SyncStatus volume over Status for grouped players ([#28](https://github.com/tbaur/bluesound-controller/issues/28)) ([6f34cb9](https://github.com/tbaur/bluesound-controller/commit/6f34cb99386565420a5e98a492ca1afc009e4044))
+
 ## [1.1.3](https://github.com/tbaur/bluesound-controller/compare/v1.1.2...v1.1.3) (2026-07-12)
 
 
