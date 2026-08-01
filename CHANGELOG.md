@@ -9,6 +9,18 @@ From 1.1.1 onward this file is maintained automatically by
 [release-please](https://github.com/googleapis/release-please) based on
 [Conventional Commits](https://www.conventionalcommits.org). See [RELEASING.md](RELEASING.md).
 
+## [1.3.0](https://github.com/tbaur/bluesound-controller/compare/v1.2.1...v1.3.0) (2026-08-01)
+
+
+### Features
+
+* **discovery:** multi-zone endpoints, faster polls, orphan sync break ([af9701c](https://github.com/tbaur/bluesound-controller/commit/af9701cb362b273a0705f56150aded1df9c12121))
+
+
+### Bug Fixes
+
+* **types:** TypeGuard BluOS response checks for mypy ([#38](https://github.com/tbaur/bluesound-controller/issues/38)) ([c8e9b42](https://github.com/tbaur/bluesound-controller/commit/c8e9b4269699202762468a318bd249e662c192a2))
+
 ## [1.2.1](https://github.com/tbaur/bluesound-controller/compare/v1.2.0...v1.2.1) (2026-07-12)
 
 
