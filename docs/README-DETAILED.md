@@ -4,23 +4,24 @@
 
 A production-ready, unified command-line controller for Bluesound devices on macOS.
 
-v1.1.0 - Maintenance release: Python 3.10+ minimum, security fixes, and packaging improvements.
+Current line: multi-zone discovery (`ip:port`, `_musc` + `_musp` for CI secondary zones). Released version is tagged; see [CHANGELOG.md](../CHANGELOG.md).
 
 ## Features
 
 ### Device Discovery
 
 **Dual Discovery Protocol Support:**
-- **mDNS (Bonjour)**: Default discovery method using macOS native `dns-sd` command. Fast and efficient for most networks.
-- **LSDP (Lenbrook Service Discovery Protocol)**: Alternative discovery using UDP broadcast on port 11430. More reliable on networks with multicast issues (as noted in BluOS API documentation). Uses binary packet protocol with Announce, Query, and Delete messages.
+- **mDNS (Bonjour)**: Default discovery method using macOS native `dns-sd`. Browses `_musc._tcp` (primary players) and `_musp._tcp` (CI secondary zones such as NAD CI S2) and keeps the SRV port.
+- **LSDP (Lenbrook Service Discovery Protocol)**: Alternative discovery using UDP broadcast on port 11430. More reliable on networks with multicast issues. Discovers chassis IPs only (normalized to `ip:11000`); use mDNS for secondary zones.
 - **Hybrid Mode**: Configure `DISCOVERY_METHOD=both` to try mDNS first, automatically fallback to LSDP if no devices found.
 
 **Discovery Features:**
-- Automatic device discovery on local network
+- Players keyed as canonical `ip:port` (primary `11000`, CI zones `11010+`)
+- `/SyncStatus` verification before writing the discovery cache
 - Configurable discovery timeout (default: 5 seconds)
 - Intelligent caching with TTL (default: 300 seconds) to reduce network traffic
-- IP address validation and sanitization (rejects loopback, multicast, reserved, and link-local addresses)
-- Support for multiple device types: BluOS Players, Servers, Hubs, and secondary zones
+- IP/endpoint validation and sanitization (rejects loopback, multicast, reserved, and link-local addresses)
+- Support for BluOS Players, Servers, Hubs, and CI multi-zone secondary endpoints
 
 ### Status Monitoring
 
@@ -234,7 +235,7 @@ Standalone:
 Run the installation script from the repository:
 
 ```bash
-cd ~/github/bluesound-controller
+# from the cloned repo
 ./install.sh
 ```
 
@@ -259,7 +260,6 @@ Configuration is stored in `~/.config/bluesound-controller/config.json` (JSON fo
 
 ```json
 {
-  "BLUOS_SERVICE": "_musc._tcp",
   "DISCOVERY_METHOD": "mdns",
   "DISCOVERY_TIMEOUT": "5",
   "CACHE_TTL": "300",
@@ -272,9 +272,11 @@ Configuration is stored in `~/.config/bluesound-controller/config.json` (JSON fo
 ```
 
 **Discovery Methods:**
-- `mdns` - mDNS/Bonjour discovery (default, recommended)
-- `lsdp` - LSDP (Lenbrook Service Discovery Protocol) - more reliable on networks with multicast issues
+- `mdns` - mDNS/Bonjour discovery (default, recommended); always browses `_musc._tcp` and `_musp._tcp`
+- `lsdp` - LSDP (Lenbrook Service Discovery Protocol) - more reliable on networks with multicast issues; primary port only
 - `both` - Try mDNS first, fallback to LSDP if no devices found
+
+`BLUOS_SERVICE` may still appear in older configs; discovery ignores it and uses the built-in dual-service browse list.
 
 ### UniFi Integration (Optional)
 
@@ -803,19 +805,7 @@ The codebase is organized into modular components:
 
 ## Version
 
-v1.1.0
-
-### v1.1.0 Highlights
-
-- Python 3.10+ required
-- Security fixes for pytest dependency and keychain output
-- Packaging and CI workflow improvements
-
-See [CHANGELOG.md](../CHANGELOG.md) for the complete version history.
-
-### v1.0.0 Features
-
-See [CHANGELOG.md](../CHANGELOG.md) for the complete list of features in this release.
+See [CHANGELOG.md](../CHANGELOG.md) for the current released version and history. Unreleased work on `main` may include multi-zone CI discovery ahead of the next Release PR merge.
 
 ## Additional Documentation
 

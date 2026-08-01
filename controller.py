@@ -26,7 +26,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 from xml.etree.ElementTree import ParseError
 import logging
-from typing import List, Dict, Optional, Set, Tuple
+from typing import List, Dict, Optional, Set, Tuple, TypeGuard
 from dataclasses import asdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -994,8 +994,8 @@ class BluesoundController:
         return self._endpoint_get(ip, f"/Preset?id={preset_id}") is not None
     
     @staticmethod
-    def _bluos_response_ok(content: Optional[bytes]) -> bool:
-        """True when BluOS returned a non-error XML/body."""
+    def _bluos_response_ok(content: Optional[bytes]) -> TypeGuard[bytes]:
+        """True when BluOS returned a non-error XML/body (narrows to bytes)."""
         if not content:
             return False
         try:

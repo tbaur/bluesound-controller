@@ -2,7 +2,7 @@
 
 Source of truth: [BluOS Custom Integration API v1.7](https://bluesoundprofessional.com/wp-content/uploads/2025/06/BluOS-Custom-Integration-API_v1.7.pdf) (also published at bluos.io). Verified against LAN players on firmware 4.16.x.
 
-The BluOS API is device-specific. Each device has its own IP and responds independently on port 11000. There are no broadcast or multi-device endpoints — multi-device control is implemented client-side by iterating over discovered devices.
+The BluOS API is device-specific. Each player endpoint responds independently over HTTP — typically port **11000** for primary zones, and **11010+** for CI secondary zones (e.g. NAD CI S2 `_musp` SRV records). There are no broadcast or multi-device endpoints — multi-device control is implemented client-side by iterating over discovered `ip:port` endpoints.
 
 ## Endpoints Used
 
@@ -53,26 +53,31 @@ Select an input with `GET /Play?inputTypeIndex=<type>-<n>` where type is `analog
 </SyncStatus>
 ```
 
-Values may include a port suffix (`172.16.10.174:11000`). Clients should normalize to the host/IP portion.
+Values may include a port suffix (`172.16.10.174:11000` or `172.16.10.144:11010`). Clients should preserve the port for API calls and sync membership; bare IPs default to `11000`.
+
+### CI secondary zones
+
+Multi-zone CI players advertise each zone as its own BluOS id (often `ip:11010`, `ip:11011`, …). mDNS service `_musp._tcp` carries the SRV port; `_musc._tcp` is the primary. SyncStatus `<slave id="…" port="…"/>` and `<master port="…">` must be combined into a canonical `ip:port` endpoint.
 
 ## Sync Group Behavior
 
 Runtime sync groups are managed through the **primary** device:
 
-- **Create / add slave:** `GET http://<primary-ip>:11000/AddSlave?slave=<slave-ip>&port=11000`
-- **Remove slave / ungroup:** `GET http://<primary-ip>:11000/RemoveSlave?slave=<slave-ip>&port=11000`
+- **Create / add slave:** `GET http://<primary-ip>:<primary-port>/AddSlave?slave=<slave-ip>&port=<slave-port>`
+- **Remove slave / ungroup:** `GET http://<primary-ip>:<primary-port>/RemoveSlave?slave=<slave-ip>&port=<slave-port>`
 - Playback commands on the primary propagate to all slaves automatically
-- Ungrouping must be sent to the **primary**, not broadcast to every player IP
+- Ungrouping must be sent to the **primary**, not broadcast to every player endpoint
+- If the primary is offline, orphaned secondaries can be re-parented briefly onto a reachable donor, then removed, so they become standalone again
 
 ## Implementation Pattern
 
-1. Discover devices (mDNS/LSDP)
+1. Discover endpoints (mDNS `_musc`/`_musp` and/or LSDP); verify `/SyncStatus` before caching
 2. Filter by name pattern if specified
-3. Call endpoint on each matching device's IP via `ThreadPoolExecutor`
+3. Call the API on each matching `ip:port` via `ThreadPoolExecutor`
 4. Report per-device success/failure
 
 For sync operations specifically:
 
-1. Query `/SyncStatus` on each player to learn primary/slave relationships
-2. Send `AddSlave` / `RemoveSlave` only to the primary IP
+1. Query `/SyncStatus` on each player to learn primary/slave relationships (endpoint-aware)
+2. Send `AddSlave` / `RemoveSlave` only to the primary endpoint, passing the slave port
 3. Use `sync list` to verify group state after changes
