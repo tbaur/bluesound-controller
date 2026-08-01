@@ -91,7 +91,7 @@ class TestMultiDeviceSupport:
             with patch.object(cli.ctl, 'play', return_value=True) as mock_play:
                 cli.play(args)
                 assert mock_play.call_count == 1
-                mock_play.assert_called_with("192.168.1.100")
+                mock_play.assert_called_with("192.168.1.100:11000")
     
     @patch('cli.Network')
     def test_queue_clear_all_devices(self, mock_network, cli, mock_devices):

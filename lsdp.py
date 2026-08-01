@@ -77,7 +77,7 @@ class LSDPDiscovery:
             List of discovered IP addresses
         """
         if class_ids is None:
-            class_ids = [CLASS_BLUOS_PLAYER, CLASS_BLUOS_HUB]
+            class_ids = [CLASS_BLUOS_PLAYER, CLASS_BLUOS_PLAYER_SECONDARY, CLASS_BLUOS_HUB]
         
         self.discovered_devices.clear()
         
