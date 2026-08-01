@@ -270,7 +270,9 @@ class TestSyncGroups:
     @patch('controller.Network')
     def test_add_sync_slave(self, mock_network, controller):
         """Test adding sync slave."""
-        mock_network.get.return_value = b"OK"
+        mock_network.get.return_value = (
+            b'<addSlave><slave id="192.168.1.101" port="11000"/></addSlave>'
+        )
         result = controller.add_sync_slave("192.168.1.100", "192.168.1.101")
         assert result is True
         call_url = mock_network.get.call_args[0][0]
@@ -280,10 +282,80 @@ class TestSyncGroups:
     @patch('controller.Network')
     def test_remove_sync_slave(self, mock_network, controller):
         """Test removing sync slave."""
-        mock_network.get.return_value = b"OK"
+        # RemoveSlave response + SyncStatus verify (no master)
+        mock_network.get.side_effect = [
+            b"<SyncStatus id='192.168.1.100:11000'/>",
+            b"<SyncStatus id='192.168.1.101:11000'/>",
+        ]
         result = controller.remove_sync_slave("192.168.1.100", "192.168.1.101")
         assert result is True
-        call_url = mock_network.get.call_args[0][0]
+        call_url = mock_network.get.call_args_list[0].args[0]
         assert "RemoveSlave?slave=" in call_url
         assert "port=11000" in call_url
+
+    @patch('controller.Network')
+    def test_remove_sync_slave_rejects_error_xml(self, mock_network, controller):
+        """BluOS <error> bodies must not count as a successful break."""
+        err = b"<error>no slave available as new master</error>"
+        # master remove+legacy fail; slave remove returns error twice; no donors
+        mock_network.get.side_effect = [None, None, err, err]
+        controller.ips = []
+        result = controller.remove_sync_slave(
+            "172.16.10.174:11000", "172.16.10.166:11000"
+        )
+        assert result is False
+
+    @patch('controller.Network')
+    def test_remove_sync_slave_reparents_orphan(self, mock_network, controller):
+        """Orphaned reconnecting slave is cleared via a live donor primary."""
+        controller.ips = ["172.16.10.144:11000", "172.16.10.166:11000"]
+        add_ok = b'<addSlave><slave id="172.16.10.166" port="11000"/></addSlave>'
+        remove_ok = b"<SyncStatus id='172.16.10.144:11000'/>"
+        standalone = b"<SyncStatus id='172.16.10.166:11000' name='Roaming'/>"
+        mock_network.get.side_effect = [
+            None,  # RemoveSlave on dead master
+            None,  # legacy on master
+            b"<error>no slave available as new master</error>",  # slave self
+            None,  # legacy on slave
+            add_ok,  # AddSlave to donor
+            remove_ok,  # RemoveSlave on donor
+            standalone,  # verify ungrouped
+        ]
+        result = controller.remove_sync_slave(
+            "172.16.10.174:11000", "172.16.10.166:11000"
+        )
+        assert result is True
+        urls = [c.args[0] for c in mock_network.get.call_args_list]
+        assert any("172.16.10.144:11000/AddSlave" in u for u in urls)
+        assert any("172.16.10.144:11000/RemoveSlave" in u for u in urls)
+
+    @patch('controller.Network')
+    def test_player_is_ungrouped_states(self, mock_network, controller):
+        """Ungrouped check distinguishes standalone, grouped, and unreachable."""
+        mock_network.get.return_value = b"<SyncStatus name='x'/>"
+        assert controller._player_is_ungrouped("172.16.10.166:11000") is True
+
+        mock_network.get.return_value = (
+            b"<SyncStatus><master>172.16.10.174</master></SyncStatus>"
+        )
+        assert controller._player_is_ungrouped("172.16.10.166:11000") is False
+
+        mock_network.get.return_value = None
+        assert controller._player_is_ungrouped("172.16.10.166:11000") is None
+
+    @patch('controller.Network')
+    def test_remove_sync_slave_unreachable_not_success(self, mock_network, controller):
+        """RemoveSlave HTTP body is not enough if the slave cannot be verified."""
+        controller.ips = []
+        # Master RemoveSlave returns XML, but every SyncStatus verify is down.
+        mock_network.get.side_effect = [
+            b"<SyncStatus id='master'/>",
+            *[None] * 8,  # verify polls + legacy/slave attempts
+        ]
+        with patch.object(controller, '_wait_until_ungrouped', return_value=False):
+            with patch.object(controller, '_ungroup_via_reparent', return_value=False):
+                result = controller.remove_sync_slave(
+                    "172.16.10.174:11000", "172.16.10.166:11000"
+                )
+        assert result is False
 

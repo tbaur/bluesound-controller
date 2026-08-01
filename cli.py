@@ -35,11 +35,20 @@ from keychain import set_api_key, get_api_key, delete_api_key, has_api_key, is_m
 
 logger = logging.getLogger("Bluesound")
 
+
+def _player_api_base(device: PlayerStatus) -> Optional[str]:
+    """Return ``http://ip:port`` for a player's BluOS API, or None if invalid."""
+    if not sanitize_ip(device.ip):
+        return None
+    return f"http://{device.ip}:{device.port}"
+
+
 class BluesoundCLI:
     """Command-line interface for Bluesound Controller."""
     
     def __init__(self, ctl: BluesoundController):
         self.ctl = ctl
+        self._did_stale_rescan = False
     
     def _get_matching_devices(self, target: Optional[str] = None) -> List[PlayerStatus]:
         """
@@ -51,14 +60,37 @@ class BluesoundCLI:
         Returns:
             List of matching PlayerStatus objects
         """
-        targets = []
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS_DISCOVERY) as ex:
-            f_map = {ex.submit(self.ctl.get_device_info, ip): ip for ip in self.ctl.ips}
-            for f in as_completed(f_map):
-                d = f.result()
-                if d.name != 'Unknown':
-                    if not target or target.lower() in d.name.lower():
-                        targets.append(d)
+        if not self.ctl.ips:
+            return []
+
+        def _poll() -> List[PlayerStatus]:
+            found: List[PlayerStatus] = []
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS_DISCOVERY) as ex:
+                f_map = {
+                    ex.submit(self.ctl.get_device_info, ep, False): ep
+                    for ep in self.ctl.ips
+                }
+                for f in as_completed(f_map):
+                    d = f.result()
+                    if d.name != 'Unknown':
+                        if not target or target.lower() in d.name.lower():
+                            found.append(d)
+            return found
+
+        targets = _poll()
+        # One auto-rescan when listing all devices and every cached endpoint is
+        # dead — not when a name filter simply matched nothing.
+        if (
+            not targets
+            and self.ctl.ips
+            and not target
+            and not self._did_stale_rescan
+        ):
+            self._did_stale_rescan = True
+            logger.info("Cached players unresponsive; rescanning once")
+            self.ctl.discover(force_refresh=True)
+            if self.ctl.ips:
+                targets = _poll()
         return targets
     
     def print_help(self) -> None:
@@ -120,20 +152,20 @@ class BluesoundCLI:
         
         results = {}
         with ThreadPoolExecutor(max_workers=MAX_WORKERS_DISCOVERY) as executor:
-            future_to_ip = {executor.submit(self.ctl.get_device_info, ip): ip for ip in self.ctl.ips}
-            for future in as_completed(future_to_ip):
+            future_to_ep = {executor.submit(self.ctl.get_device_info, ep): ep for ep in self.ctl.ips}
+            for future in as_completed(future_to_ep):
                 try:
                     d = future.result(timeout=5)  # Add timeout to prevent hanging
-                    results[d.ip] = d.name
+                    results[d.endpoint] = d.name
                 except FutureTimeoutError:
-                    ip = future_to_ip.get(future, 'unknown')
-                    results[ip] = 'Timeout'
+                    ep = future_to_ep.get(future, 'unknown')
+                    results[ep] = 'Timeout'
                 except Exception as e:
-                    ip = future_to_ip.get(future, 'unknown')
-                    results[ip] = 'Error'
+                    ep = future_to_ep.get(future, 'unknown')
+                    results[ep] = 'Error'
         
-        for ip in self.ctl.ips:
-            print(f"{CYAN}{ip}{RESET} - {BOLD}{results.get(ip, 'Unknown')}{RESET}")
+        for ep in self.ctl.ips:
+            print(f"{CYAN}{ep}{RESET} - {BOLD}{results.get(ep, 'Unknown')}{RESET}")
         print("-" * 40)
         print()
     
@@ -148,11 +180,14 @@ class BluesoundCLI:
         
         max_workers = min(MAX_WORKERS_STATUS, len(self.ctl.ips)) if self.ctl.ips else MAX_WORKERS_STATUS
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_ip = {executor.submit(self.ctl.get_device_info, ip): ip for ip in self.ctl.ips}
-            for future in as_completed(future_to_ip):
+            future_to_ep = {
+                executor.submit(self.ctl.get_device_info, ep, True): ep
+                for ep in self.ctl.ips
+            }
+            for future in as_completed(future_to_ep):
                 devices.append(future.result())
         
-        devices.sort(key=lambda x: x.ip)
+        devices.sort(key=lambda x: (x.ip, x.port))
         
         if pattern:
             devices = [d for d in devices if pattern.lower() in d.name.lower()]
@@ -219,7 +254,8 @@ class BluesoundCLI:
             print(f"[{BOLD}{idx}{RESET}] {BOLD}{d.name}{RESET}")
             print(f"    {DIM}" + "-"*76 + f"{RESET}")
             print(f"    Model: {d.full_model} | {BOLD}Uptime: {d.uptime}{RESET}")
-            print(f"    IP:    {d.ip}  | {conn_str}")
+            endpoint_disp = d.endpoint if d.port != BLUOS_PORT else d.ip
+            print(f"    IP:    {endpoint_disp}  | {conn_str}")
             
             if d.unifi and d.unifi.uplink != 'Unknown':
                 print(f"    Net:   ↓ {format_rate(d.unifi.down_rate)}  ↑ {format_rate(d.unifi.up_rate)}  (Total: {format_bytes(d.unifi.down_tot)} / {format_bytes(d.unifi.up_tot)})")
@@ -284,9 +320,9 @@ class BluesoundCLI:
         return None
 
     def _device_name_for_ip(self, ip: str, devices: List[PlayerStatus]) -> str:
-        """Resolve a player name from IP, falling back to the IP itself."""
+        """Resolve a player name from IP/endpoint, falling back to the value itself."""
         for device in devices:
-            if device.ip == ip:
+            if device.endpoint == ip or device.ip == ip:
                 return device.name
         return ip
 
@@ -319,27 +355,27 @@ class BluesoundCLI:
                 else:
                     group_label = primary.group or primary.name
                 print(f"\n{BOLD}Group:{RESET} {group_label}")
-                print(f"  Primary: {primary.name} ({CYAN}{primary.ip}{RESET})")
-                grouped_ips.add(primary.ip)
+                print(f"  Primary: {primary.name} ({CYAN}{primary.endpoint}{RESET})")
+                grouped_ips.add(primary.endpoint)
                 for slave_ip in primary.slaves:
                     slave_name = self._device_name_for_ip(slave_ip, devices)
                     print(f"  Slave:   {slave_name} ({CYAN}{slave_ip}{RESET})")
                     grouped_ips.add(slave_ip)
 
         for device in sorted(devices, key=lambda item: item.name.lower()):
-            if device.master and device.ip not in grouped_ips:
+            if device.master and device.endpoint not in grouped_ips:
                 master_name = self._device_name_for_ip(device.master, devices)
                 print(f"{device.name} -> {master_name} ({CYAN}{device.master}{RESET}) (Synced)")
-                grouped_ips.add(device.ip)
+                grouped_ips.add(device.endpoint)
 
         standalone = [
             device for device in devices
-            if device.ip not in grouped_ips
+            if device.endpoint not in grouped_ips
         ]
         if standalone:
             print(f"\n{BOLD}Standalone:{RESET}")
             for device in standalone:
-                print(f"  {device.name} ({CYAN}{device.ip}{RESET})")
+                print(f"  {device.name} ({CYAN}{device.endpoint}{RESET})")
 
     def _format_connection_string(self, d: PlayerStatus) -> str:
         """Format connection status string."""
@@ -367,6 +403,13 @@ class BluesoundCLI:
         print("-" * 40)
         
         devices = self._get_matching_devices(target)
+        if not devices:
+            if not self.ctl.ips:
+                print(f"{RED}No devices discovered. Try `bsc status --scan`.{RESET}\n")
+            else:
+                print(f"{YELLOW}No players responded. Try `bsc status --scan`.{RESET}\n")
+            return
+
         for d in devices:
             cur = d.volume
             new_cmd = ""
@@ -414,10 +457,15 @@ class BluesoundCLI:
                     continue
             
             if new_cmd:
-                sanitized_ip = sanitize_ip(d.ip)
-                if sanitized_ip:
-                    Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Volume?{new_cmd}", timeout=1)
-                    print(f"[{disp}] {d.name}")
+                base = _player_api_base(d)
+                if base:
+                    res = Network.get(
+                        f"{base}/Volume?{new_cmd}", timeout=1, max_retries=1
+                    )
+                    if res is not None:
+                        print(f"[{disp}] {d.name}")
+                    else:
+                        print(f"[{RED}ERROR{RESET}] {d.name} (volume request failed)")
                 else:
                     print(f"{RED}Invalid IP for {d.name}: {d.ip}{RESET}")
         print()
@@ -434,9 +482,9 @@ class BluesoundCLI:
         
         print("-" * 40)
         for d in targets:
-            sanitized_ip = sanitize_ip(d.ip)
-            if sanitized_ip:
-                res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Pause", timeout=1)
+            base = _player_api_base(d)
+            if base:
+                res = Network.get(f"{base}/Pause", timeout=1)
                 state = f"{GREEN}PAUSED{RESET}" if res is not None else f"{RED}ERROR{RESET}"
                 print(f"[{state}] {d.name}")
             else:
@@ -507,12 +555,13 @@ class BluesoundCLI:
         print("=" * 50)
         
         matches = self._get_matching_devices(target)
-        tgt_ip = matches[0].ip if matches else None
+        match = matches[0] if matches else None
         
-        if not tgt_ip:
+        if not match:
             print(f"{RED}Device not found.{RESET}\n")
             return
         
+        tgt_ip = match.ip
         arp_mac = "Unknown"
         sanitized_ip = sanitize_ip(tgt_ip)
         if sanitized_ip:
@@ -550,7 +599,7 @@ class BluesoundCLI:
         
         sys_uptime = self.ctl.get_sys_uptime(tgt_ip)
         
-        print(f"IP Address: {CYAN}{tgt_ip}{RESET}")
+        print(f"IP Address: {CYAN}{match.endpoint}{RESET}")
         print(f"ARP MAC:    {CYAN}{arp_mac}{RESET}")
         print(f"Sys Uptime: {GREEN}{sys_uptime}{RESET}")
         
@@ -563,12 +612,12 @@ class BluesoundCLI:
             print(f"UniFi DB:   {DIM}Not Found{RESET}")
         
         print(f"\n{BOLD}Endpoint: /SyncStatus{RESET}")
-        if sanitized_ip:
-            raw = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/SyncStatus")
+        base = _player_api_base(match)
+        raw = Network.get(f"{base}/SyncStatus") if base else None
         if raw:
             print(raw.decode('utf-8', errors='ignore'))
         else:
-            print(f"{RED}Invalid IP address: {tgt_ip}{RESET}")
+            print(f"{RED}Invalid endpoint: {match.endpoint}{RESET}")
         print()
     
     def _run_device_command(
@@ -606,36 +655,36 @@ class BluesoundCLI:
         """Start/resume playback on all or matching devices."""
         self._run_device_command(
             args.target, "Starting Playback",
-            lambda d: self.ctl.play(d.ip), "PLAYING",
+            lambda d: self.ctl.play(d.endpoint), "PLAYING",
         )
     
     def stop(self, args) -> None:
         """Stop playback on all or matching devices."""
         self._run_device_command(
             args.target, "Stopping Playback",
-            lambda d: self.ctl.stop(d.ip), "STOPPED",
+            lambda d: self.ctl.stop(d.endpoint), "STOPPED",
         )
     
     def skip(self, args) -> None:
         """Skip to next track on all or matching devices."""
         self._run_device_command(
             args.target, "Skipping Track",
-            lambda d: self.ctl.skip(d.ip), "SKIPPED",
+            lambda d: self.ctl.skip(d.endpoint), "SKIPPED",
         )
     
     def previous(self, args) -> None:
         """Go to previous track on all or matching devices."""
         self._run_device_command(
             args.target, "Previous Track",
-            lambda d: self.ctl.previous(d.ip), "PREVIOUS",
+            lambda d: self.ctl.previous(d.endpoint), "PREVIOUS",
         )
     
     def toggle(self, args) -> None:
         """Toggle play/pause state on all or matching devices."""
         def _toggle(d: PlayerStatus) -> bool:
             if d.state in ['play', 'stream', 'connecting']:
-                return self.ctl.pause_device(d.ip)
-            return self.ctl.play(d.ip)
+                return self.ctl.pause_device(d.endpoint)
+            return self.ctl.play(d.endpoint)
         
         self._run_device_command(
             args.target, "Toggling Playback", _toggle, "OK",
@@ -655,7 +704,7 @@ class BluesoundCLI:
         if action == 'show' or action is None:
             # Show queue for all matching devices
             for tgt_device in targets:
-                queue_data = self.ctl.get_queue(tgt_device.ip)
+                queue_data = self.ctl.get_queue(tgt_device.endpoint)
                 if queue_data:
                     print(f"\n{BOLD}Queue for {tgt_device.name}:{RESET}")
                     print("-" * 60)
@@ -675,7 +724,7 @@ class BluesoundCLI:
             print(f"\n{BOLD}Clearing Queue on {scope}...{RESET}")
             print("-" * 40)
             for tgt_device in targets:
-                res = self.ctl.clear_queue(tgt_device.ip)
+                res = self.ctl.clear_queue(tgt_device.endpoint)
                 state = f"{GREEN}CLEARED{RESET}" if res else f"{RED}ERROR{RESET}"
                 print(f"[{state}] {tgt_device.name}")
             print()
@@ -691,7 +740,7 @@ class BluesoundCLI:
                 print(f"\n{BOLD}Moving Queue Item on {scope}...{RESET}")
                 print("-" * 40)
                 for tgt_device in targets:
-                    res = self.ctl.move_queue_item(tgt_device.ip, from_idx, to_idx)
+                    res = self.ctl.move_queue_item(tgt_device.endpoint, from_idx, to_idx)
                     state = f"{GREEN}MOVED{RESET}" if res else f"{RED}ERROR{RESET}"
                     print(f"[{state}] Moved item {from_idx} to {to_idx} for {tgt_device.name}")
                 print()
@@ -715,14 +764,14 @@ class BluesoundCLI:
             print(f"\n{BOLD}Setting Input on {scope}...{RESET}")
             print("-" * 40)
             for tgt_device in targets:
-                res = self.ctl.set_input(tgt_device.ip, input_name)
+                res = self.ctl.set_input(tgt_device.endpoint, input_name)
                 state = f"{GREEN}SET{RESET}" if res else f"{RED}ERROR{RESET}"
                 print(f"[{state}] {tgt_device.name} -> '{input_name}'")
             print()
         else:
             # List inputs for all matching devices
             for tgt_device in targets:
-                inputs = self.ctl.get_inputs(tgt_device.ip)
+                inputs = self.ctl.get_inputs(tgt_device.endpoint)
                 if inputs:
                     print(f"\n{BOLD}Available Inputs for {tgt_device.name}:{RESET}")
                     print("-" * 60)
@@ -757,14 +806,14 @@ class BluesoundCLI:
             print(f"\n{BOLD}Setting Bluetooth Mode on {scope}...{RESET}")
             print("-" * 40)
             for tgt_device in targets:
-                res = self.ctl.set_bluetooth_mode(tgt_device.ip, mode_val)
+                res = self.ctl.set_bluetooth_mode(tgt_device.endpoint, mode_val)
                 state = f"{GREEN}SET{RESET}" if res else f"{RED}ERROR{RESET}"
                 print(f"[{state}] {tgt_device.name} -> '{mode}'")
             print()
         else:
             # Show current mode for all matching devices
             for tgt_device in targets:
-                current_mode = self.ctl.get_bluetooth_mode(tgt_device.ip)
+                current_mode = self.ctl.get_bluetooth_mode(tgt_device.endpoint)
                 if current_mode:
                     print(f"{BOLD}Bluetooth Mode for {tgt_device.name}:{RESET} {CYAN}{current_mode}{RESET}")
                 else:
@@ -791,7 +840,7 @@ class BluesoundCLI:
                 print(f"\n{BOLD}Playing Preset {pid} on {scope}...{RESET}")
                 print("-" * 40)
                 for tgt_device in targets:
-                    res = self.ctl.play_preset(tgt_device.ip, pid)
+                    res = self.ctl.play_preset(tgt_device.endpoint, pid)
                     state = f"{GREEN}PLAYING{RESET}" if res else f"{RED}ERROR{RESET}"
                     print(f"[{state}] {tgt_device.name} -> Preset {pid}")
                 print()
@@ -800,7 +849,7 @@ class BluesoundCLI:
         else:
             # List presets for all matching devices
             for tgt_device in targets:
-                presets = self.ctl.get_presets(tgt_device.ip)
+                presets = self.ctl.get_presets(tgt_device.endpoint)
                 if presets:
                     print(f"\n{BOLD}Presets for {tgt_device.name}:{RESET}")
                     print("-" * 60)
@@ -838,7 +887,7 @@ class BluesoundCLI:
                     print(f"{RED}Primary device '{primary_name}' not found.{RESET}")
                     return
 
-            slaves = [d for d in all_devices if d.ip != master.ip]
+            slaves = [d for d in all_devices if d.endpoint != master.endpoint]
             if not slaves:
                 print(f"{YELLOW}No other players to group under {master.name}.{RESET}")
                 return
@@ -846,7 +895,7 @@ class BluesoundCLI:
             print(f"\n{BOLD}Enabling runtime group: {master.name} leads {len(slaves)} player(s)...{RESET}")
             print("-" * 40)
             for slave in sorted(slaves, key=lambda d: d.name.lower()):
-                res = self.ctl.add_sync_slave(master.ip, slave.ip)
+                res = self.ctl.add_sync_slave(master.endpoint, slave.endpoint)
                 state = f"{GREEN}ADDED{RESET}" if res else f"{RED}ERROR{RESET}"
                 print(f"[{state}] {slave.name} -> {master.name}")
             print()
@@ -869,7 +918,7 @@ class BluesoundCLI:
             for slave_name in slave_names:
                 slave_dev = devices.get(slave_name.strip().lower())
                 if slave_dev:
-                    res = self.ctl.add_sync_slave(master.ip, slave_dev.ip)
+                    res = self.ctl.add_sync_slave(master.endpoint, slave_dev.endpoint)
                     state = f"{GREEN}ADDED{RESET}" if res else f"{RED}ERROR{RESET}"
                     print(f"[{state}] {slave_dev.name} -> {master.name}")
                 else:
@@ -902,14 +951,16 @@ class BluesoundCLI:
                 if success:
                     # Clear leftover AirPlay/capture on freed secondaries.
                     self.ctl.stop(slave_ip)
-                    primary_ips.add(master_ip)
+                    primary = self.ctl.get_device_info(master_ip)
+                    # Skip unreachable/orphaned primaries (e.g. old DHCP lease).
+                    if primary.name != "Unknown":
+                        primary_ips.add(master_ip)
 
             for master_ip in sorted(primary_ips):
                 primary = self.ctl.get_device_info(master_ip)
-                if not primary.slaves:
+                if primary.name != "Unknown" and not primary.slaves:
                     self.ctl.stop(master_ip)
-                    name = primary.name if primary.name != "Unknown" else master_ip
-                    print(f"[{GREEN}STOPPED{RESET}] {name} (cleared capture)")
+                    print(f"[{GREEN}STOPPED{RESET}] {primary.name} (cleared capture)")
             print()
         
         elif action == 'list':

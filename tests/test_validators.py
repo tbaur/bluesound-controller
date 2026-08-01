@@ -4,7 +4,8 @@ Tests for validators module.
 import pytest
 from validators import (
     validate_ip, validate_hostname, sanitize_ip,
-    validate_volume, validate_timeout, validate_config_value
+    validate_volume, validate_timeout, validate_config_value,
+    parse_endpoint, format_endpoint, sanitize_endpoint,
 )
 
 
@@ -122,6 +123,27 @@ class TestSanitizeIP:
         assert sanitize_ip("invalid") is None
         assert sanitize_ip("") is None
         assert sanitize_ip("256.1.1.1") is None
+
+
+class TestEndpointHelpers:
+    """Test BluOS ip:port endpoint helpers."""
+
+    def test_parse_endpoint_bare_ip(self):
+        assert parse_endpoint("192.168.1.1") == ("192.168.1.1", 11000)
+
+    def test_parse_endpoint_with_port(self):
+        assert parse_endpoint("192.168.1.1:11010") == ("192.168.1.1", 11010)
+
+    def test_parse_endpoint_invalid(self):
+        ip, port = parse_endpoint("127.0.0.1:11000")
+        assert ip is None
+        assert port == 11000
+
+    def test_format_and_sanitize_endpoint(self):
+        assert format_endpoint("192.168.1.1", 11010) == "192.168.1.1:11010"
+        assert sanitize_endpoint("192.168.1.1") == "192.168.1.1:11000"
+        assert sanitize_endpoint("192.168.1.1:11010") == "192.168.1.1:11010"
+        assert sanitize_endpoint("invalid") is None
 
 
 class TestValidateVolume:

@@ -35,7 +35,7 @@ class TestNetwork:
         assert result == b"post response"
         mock_urlopen.assert_called_once()
     
-    @patch('utils.time.sleep')
+    @patch('network.time.sleep')
     @patch('urllib.request.urlopen')
     def test_handles_timeout(self, mock_urlopen, _mock_sleep):
         """Test handling of timeout."""
@@ -45,7 +45,7 @@ class TestNetwork:
         
         assert result is None
     
-    @patch('utils.time.sleep')
+    @patch('network.time.sleep')
     @patch('urllib.request.urlopen')
     def test_handles_connection_error(self, mock_urlopen, _mock_sleep):
         """Test handling of connection error."""
@@ -55,17 +55,19 @@ class TestNetwork:
         
         assert result is None
     
-    @patch('utils.time.sleep')
+    @patch('network.time.sleep')
     @patch('urllib.request.urlopen')
     def test_handles_http_error(self, mock_urlopen, _mock_sleep):
-        """Test handling of HTTP error."""
-        mock_urlopen.side_effect = HTTPError("url", 404, "Not Found", {}, None)
+        """HTTP errors must not be retried (HTTPError subclasses URLError)."""
+        mock_urlopen.side_effect = HTTPError("url", 502, "Bad Gateway", {}, None)
         
         result = Network.get("http://192.168.1.1/test")
         
         assert result is None
+        assert mock_urlopen.call_count == 1
+        _mock_sleep.assert_not_called()
     
-    @patch('utils.time.sleep')
+    @patch('network.time.sleep')
     @patch('urllib.request.urlopen')
     def test_handles_url_error(self, mock_urlopen, _mock_sleep):
         """Test handling of URL error."""
@@ -74,6 +76,18 @@ class TestNetwork:
         result = Network.get("http://192.168.1.1/test")
         
         assert result is None
+
+    @patch('network.time.sleep')
+    @patch('urllib.request.urlopen')
+    def test_max_retries_one_fails_fast(self, mock_urlopen, _mock_sleep):
+        """Device polls can disable retries so dead endpoints fail fast."""
+        mock_urlopen.side_effect = URLError("timed out")
+
+        result = Network.get("http://192.168.1.1/test", max_retries=1)
+
+        assert result is None
+        assert mock_urlopen.call_count == 1
+        _mock_sleep.assert_not_called()
     
     def test_rejects_invalid_url_scheme(self):
         """Test that invalid URL schemes are rejected."""

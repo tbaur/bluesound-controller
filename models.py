@@ -19,6 +19,8 @@ limitations under the License.
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from constants import BLUOS_PORT
+
 
 @dataclass
 class UniFiClient:
@@ -47,9 +49,9 @@ class PlayerStatus:
     volume: int = 0
     db: str = ""             # RSSI
     fw: str = ""
-    master: str = ""         # IP of master if this player is a slave
+    master: str = ""         # Endpoint (ip or ip:port) of master if slave
     group: str = ""          # Combined group name when this player is primary
-    slaves: List[str] = field(default_factory=list)  # Slave IPs when primary
+    slaves: List[str] = field(default_factory=list)  # Slave endpoints when primary
     battery: Optional[str] = None
     track: str = ""
     artist: str = ""
@@ -57,4 +59,10 @@ class PlayerStatus:
     uptime: str = "N/A"
     unifi: Optional[UniFiClient] = None
     state: str = "stop"  # Added missing state field
+    port: int = BLUOS_PORT  # BluOS API port (11010+ for CI secondary zones)
+
+    @property
+    def endpoint(self) -> str:
+        """Canonical ``ip:port`` used for BluOS API calls."""
+        return f"{self.ip}:{self.port}"
 

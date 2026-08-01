@@ -13,6 +13,15 @@ from constants import CACHE_FILE, DISCOVERY_MDNS, DISCOVERY_LSDP, DISCOVERY_BOTH
 
 class TestControllerCoverage:
     """Additional controller tests for better coverage."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_endpoint_verify(self):
+        """Avoid real LAN probes during discover() unit tests."""
+        with patch(
+            'controller.Network.get',
+            return_value=b'<SyncStatus name="ok"/>',
+        ):
+            yield
     
     @pytest.fixture
     def controller(self):

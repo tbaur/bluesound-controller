@@ -216,9 +216,13 @@ class TestCLICoverage:
         primary = PlayerStatus(
             ip="192.168.1.100",
             name="Living Room",
-            slaves=["192.168.1.101"],
+            slaves=["192.168.1.101:11000"],
         )
-        slave = PlayerStatus(ip="192.168.1.101", name="Kitchen", master="192.168.1.100")
+        slave = PlayerStatus(
+            ip="192.168.1.101",
+            name="Kitchen",
+            master="192.168.1.100:11000",
+        )
         
         mock_future1 = MagicMock()
         mock_future1.result.return_value = primary
@@ -246,15 +250,25 @@ class TestCLICoverage:
                         ):
                             with patch('builtins.print'):
                                 cli.sync(args)
-                    mock_remove.assert_called_once_with("192.168.1.100", "192.168.1.101")
+                    mock_remove.assert_called_once_with(
+                        "192.168.1.100:11000", "192.168.1.101:11000"
+                    )
                     assert mock_stop.call_count == 2
-                    mock_stop.assert_any_call("192.168.1.101")
-                    mock_stop.assert_any_call("192.168.1.100")
+                    mock_stop.assert_any_call("192.168.1.101:11000")
+                    mock_stop.assert_any_call("192.168.1.100:11000")
     
     def test_sync_break_with_master_arg(self, cli):
         """Test sync break accepts device name in master positional arg."""
-        primary = PlayerStatus(ip="192.168.1.100", name="Living Room", slaves=["192.168.1.101"])
-        slave = PlayerStatus(ip="192.168.1.101", name="Kitchen", master="192.168.1.100")
+        primary = PlayerStatus(
+            ip="192.168.1.100",
+            name="Living Room",
+            slaves=["192.168.1.101:11000"],
+        )
+        slave = PlayerStatus(
+            ip="192.168.1.101",
+            name="Kitchen",
+            master="192.168.1.100:11000",
+        )
 
         args = MagicMock()
         args.action = 'break'
@@ -275,7 +289,9 @@ class TestCLICoverage:
                     ):
                         with patch('builtins.print'):
                             cli.sync(args)
-                mock_remove.assert_called_once_with("192.168.1.100", "192.168.1.101")
+                mock_remove.assert_called_once_with(
+                    "192.168.1.100:11000", "192.168.1.101:11000"
+                )
 
     def test_sync_enable_groups_all_others(self, cli):
         """sync enable adds every other player under the primary."""
@@ -294,8 +310,8 @@ class TestCLICoverage:
                 with patch('builtins.print'):
                     cli.sync(args)
                 assert mock_add.call_count == 2
-                mock_add.assert_any_call("192.168.1.100", "192.168.1.101")
-                mock_add.assert_any_call("192.168.1.100", "192.168.1.102")
+                mock_add.assert_any_call("192.168.1.100:11000", "192.168.1.101:11000")
+                mock_add.assert_any_call("192.168.1.100:11000", "192.168.1.102:11000")
 
     def test_sync_list_no_ips(self, cli):
         """Test sync list warns when no devices discovered."""

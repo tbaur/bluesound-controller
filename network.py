@@ -17,6 +17,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 import ssl
+import time
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -24,7 +25,6 @@ import logging
 from typing import Optional, Dict
 
 from constants import DEFAULT_TIMEOUT, MAX_XML_SIZE, MAX_RETRIES, RETRY_DELAY_BASE, MAX_RETRY_DELAY
-from utils import retry_with_backoff
 
 logger = logging.getLogger("Bluesound")
 
@@ -37,14 +37,14 @@ def _url_for_log(url: str) -> str:
     """
     try:
         parts = urllib.parse.urlsplit(url)
-        if not parts.username and not parts.password:
-            return url
-        hostname = parts.hostname or ""
-        if parts.port:
-            hostname = f"{hostname}:{parts.port}"
-        return urllib.parse.urlunsplit(parts._replace(netloc=hostname))
     except ValueError:
         return "<redacted-url>"
+    if not parts.username and not parts.password:
+        return url
+    hostname = parts.hostname or ""
+    if parts.port:
+        hostname = f"{hostname}:{parts.port}"
+    return urllib.parse.urlunsplit(parts._replace(netloc=hostname))
 
 
 class Network:
@@ -60,87 +60,79 @@ class Network:
     _SSL_CTX.verify_mode = ssl.CERT_NONE
     
     @classmethod
-    @retry_with_backoff(
-        max_retries=MAX_RETRIES,
-        base_delay=RETRY_DELAY_BASE,
-        max_delay=MAX_RETRY_DELAY,
-        exceptions=(urllib.error.URLError, TimeoutError, ConnectionError, OSError)
-    )
-    def _request_impl(cls,
-                      url: str,
-                      method: str = "GET",
-                      data: Optional[bytes] = None,
-                      headers: Optional[Dict] = None,
-                      timeout: int = DEFAULT_TIMEOUT) -> Optional[bytes]:
-        """
-        Internal implementation of HTTP request (with retry logic).
-        
-        Args:
-            url: URL to request
-            method: HTTP method (GET, POST, etc.)
-            data: Optional encoded data to send
-            headers: Optional headers
-            timeout: Request timeout in seconds
-            
-        Returns:
-            Response content as bytes, or None on error
-        """
+    def _do_request(cls,
+                    url: str,
+                    method: str = "GET",
+                    data: Optional[bytes] = None,
+                    headers: Optional[Dict] = None,
+                    timeout: int = DEFAULT_TIMEOUT) -> Optional[bytes]:
+        """Single HTTP attempt. Raises URLError/TimeoutError on network failure."""
         req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
-        with urllib.request.urlopen(req, timeout=timeout, context=cls._SSL_CTX) as response:
-            # Read with size limit to prevent memory exhaustion
-            content = response.read(MAX_XML_SIZE + 1)
-            if len(content) > MAX_XML_SIZE:
-                logger.warning(
-                    "Payload exceeded size limit (%s)", _url_for_log(url)
-                )
-                return None
-            return bytes(content)
-    
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=cls._SSL_CTX) as response:
+                content = response.read(MAX_XML_SIZE + 1)
+                if len(content) > MAX_XML_SIZE:
+                    logger.warning(
+                        "Payload exceeded size limit (%s)", _url_for_log(url)
+                    )
+                    return None
+                return bytes(content)
+        except urllib.error.HTTPError as e:
+            # HTTPError is a URLError subclass; swallow so retries are not used.
+            logger.debug(
+                "HTTP error (%s): %s %s", _url_for_log(url), e.code, e.reason
+            )
+            return None
+
     @classmethod
     def request(cls, 
                 url: str, 
                 method: str = "GET", 
                 data: Optional[Dict] = None, 
                 headers: Optional[Dict] = None,
-                timeout: int = DEFAULT_TIMEOUT) -> Optional[bytes]:
+                timeout: int = DEFAULT_TIMEOUT,
+                max_retries: int = MAX_RETRIES) -> Optional[bytes]:
         """
-        Make HTTP request with security, error handling, and retry logic.
+        Make HTTP request with security, error handling, and optional retries.
         
-        Args:
-            url: URL to request
-            method: HTTP method (GET, POST, etc.)
-            data: Optional data to send
-            headers: Optional headers
-            timeout: Request timeout in seconds
-            
-        Returns:
-            Response content as bytes, or None on error
+        ``max_retries`` is the number of attempts (default from MAX_RETRIES).
+        Use ``max_retries=1`` for local device polls so dead endpoints fail fast.
         """
         log_url = _url_for_log(url)
 
-        # Validate URL scheme (only http/https allowed)
         if not url.startswith(('http://', 'https://')):
             logger.warning("Invalid URL scheme: %s", log_url)
             return None
         
-        # Encode data if provided
         encoded_data = None
         if data:
             encoded_data = urllib.parse.urlencode(data).encode('utf-8')
-        
-        try:
-            return cls._request_impl(url, method, encoded_data, headers, timeout)
-        except urllib.error.HTTPError as e:
-            # Don't retry on HTTP errors (4xx, 5xx) - these are not transient
-            logger.debug("HTTP error (%s): %s %s", log_url, e.code, e.reason)
-            return None
-        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
-            # These are retried by the decorator, but if all retries fail, return None
-            logger.debug("Network error after retries (%s): %s", log_url, e)
-            return None
-        except Exception as e:
-            logger.debug("Unexpected error (%s): %s", log_url, e)
-            return None
+
+        attempts = max(1, int(max_retries))
+        last_error: Optional[BaseException] = None
+
+        for attempt in range(attempts):
+            try:
+                return cls._do_request(url, method, encoded_data, headers, timeout)
+            except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+                last_error = e
+                if attempt < attempts - 1:
+                    delay = min(RETRY_DELAY_BASE * (2 ** attempt), MAX_RETRY_DELAY)
+                    logger.debug(
+                        "Retry %s/%s after %.2fs: %s",
+                        attempt + 1, attempts, delay, e,
+                    )
+                    time.sleep(delay)
+                    continue
+                logger.debug("Network error after retries (%s): %s", log_url, e)
+                return None
+            except Exception as e:
+                logger.debug("Unexpected error (%s): %s", log_url, e)
+                return None
+
+        if last_error:
+            logger.debug("Network error after retries (%s): %s", log_url, last_error)
+        return None
     
     @classmethod
     def get(cls, url: str, **kwargs) -> Optional[bytes]:
@@ -151,4 +143,3 @@ class Network:
     def post(cls, url: str, data: Dict, **kwargs) -> Optional[bytes]:
         """Make POST request."""
         return cls.request(url, method="POST", data=data, **kwargs)
-

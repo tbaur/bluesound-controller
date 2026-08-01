@@ -8,6 +8,7 @@ import pytest
 from controller import (
     BluesoundController,
     parse_bluos_host,
+    parse_bluos_endpoint,
     parse_sync_status_root,
 )
 from models import PlayerStatus
@@ -27,6 +28,20 @@ class TestParseBluosHost:
         assert parse_bluos_host(None) == ""
 
 
+class TestParseBluosEndpoint:
+    """Test BluOS endpoint normalization."""
+
+    def test_plain_ip_defaults_port(self):
+        assert parse_bluos_endpoint("172.16.10.174") == "172.16.10.174:11000"
+
+    def test_ip_with_port(self):
+        assert parse_bluos_endpoint("172.16.10.174:11010") == "172.16.10.174:11010"
+
+    def test_empty(self):
+        assert parse_bluos_endpoint("") == ""
+        assert parse_bluos_endpoint(None) == ""
+
+
 class TestParseSyncStatusRoot:
     """Test SyncStatus XML parsing."""
 
@@ -39,7 +54,16 @@ class TestParseSyncStatusRoot:
         master, group, slaves = parse_sync_status_root(root)
         assert master == ""
         assert group == "Living Room Speakers+Kitchen Speakers"
-        assert slaves == ["172.16.10.88"]
+        assert slaves == ["172.16.10.88:11000"]
+
+    def test_ci_secondary_slave_port(self):
+        root = ET.fromstring(
+            b'<SyncStatus name="Living Room Speakers">'
+            b'<slave id="172.16.10.144" port="11010"/>'
+            b"</SyncStatus>"
+        )
+        _master, _group, slaves = parse_sync_status_root(root)
+        assert slaves == ["172.16.10.144:11010"]
 
     def test_slave_with_master_child_element(self):
         root = ET.fromstring(
@@ -48,14 +72,14 @@ class TestParseSyncStatusRoot:
             b"</SyncStatus>"
         )
         master, group, slaves = parse_sync_status_root(root)
-        assert master == "172.16.10.174"
+        assert master == "172.16.10.174:11000"
         assert group == ""
         assert slaves == []
 
     def test_legacy_master_attribute(self):
         root = ET.fromstring(b'<sync name="Slave" master="192.168.1.100"/>')
         master, group, slaves = parse_sync_status_root(root)
-        assert master == "192.168.1.100"
+        assert master == "192.168.1.100:11000"
         assert group == ""
         assert slaves == []
 
@@ -74,38 +98,70 @@ class TestCollectSyncBreakOperations:
                 ip="172.16.10.174",
                 name="Living Room Speakers",
                 group="Living Room Speakers+Kitchen Speakers",
-                slaves=["172.16.10.88"],
+                slaves=["172.16.10.88:11000"],
             ),
-            PlayerStatus(ip="172.16.10.88", name="Kitchen Speakers", master="172.16.10.174"),
+            PlayerStatus(
+                ip="172.16.10.88",
+                name="Kitchen Speakers",
+                master="172.16.10.174:11000",
+            ),
         ]
 
         operations = controller.collect_sync_break_operations(devices)
         assert operations == [
-            ("172.16.10.174", "172.16.10.88", "Kitchen Speakers from Living Room Speakers"),
+            (
+                "172.16.10.174:11000",
+                "172.16.10.88:11000",
+                "Kitchen Speakers from Living Room Speakers",
+            ),
         ]
 
     def test_break_single_slave_target(self, controller):
         devices = [
-            PlayerStatus(ip="172.16.10.174", name="Living Room Speakers", slaves=["172.16.10.88"]),
-            PlayerStatus(ip="172.16.10.88", name="Kitchen Speakers", master="172.16.10.174"),
+            PlayerStatus(
+                ip="172.16.10.174",
+                name="Living Room Speakers",
+                slaves=["172.16.10.88:11000"],
+            ),
+            PlayerStatus(
+                ip="172.16.10.88",
+                name="Kitchen Speakers",
+                master="172.16.10.174:11000",
+            ),
         ]
         target = [devices[1]]
 
         operations = controller.collect_sync_break_operations(devices, target)
         assert operations == [
-            ("172.16.10.174", "172.16.10.88", "Kitchen Speakers from Living Room Speakers"),
+            (
+                "172.16.10.174:11000",
+                "172.16.10.88:11000",
+                "Kitchen Speakers from Living Room Speakers",
+            ),
         ]
 
     def test_break_primary_target(self, controller):
         devices = [
-            PlayerStatus(ip="172.16.10.174", name="Living Room Speakers", slaves=["172.16.10.88"]),
-            PlayerStatus(ip="172.16.10.88", name="Kitchen Speakers", master="172.16.10.174"),
+            PlayerStatus(
+                ip="172.16.10.174",
+                name="Living Room Speakers",
+                slaves=["172.16.10.88:11000"],
+            ),
+            PlayerStatus(
+                ip="172.16.10.88",
+                name="Kitchen Speakers",
+                master="172.16.10.174:11000",
+            ),
         ]
         target = [devices[0]]
 
         operations = controller.collect_sync_break_operations(devices, target)
         assert operations == [
-            ("172.16.10.174", "172.16.10.88", "Kitchen Speakers from Living Room Speakers"),
+            (
+                "172.16.10.174:11000",
+                "172.16.10.88:11000",
+                "Kitchen Speakers from Living Room Speakers",
+            ),
         ]
 
     @patch("controller.Network.get")
@@ -119,6 +175,23 @@ class TestCollectSyncBreakOperations:
         mock_network.side_effect = [sync_xml, status_xml, None]
 
         status = controller.get_device_info("172.16.10.88")
-        assert status.master == "172.16.10.174"
+        assert status.master == "172.16.10.174:11000"
         assert status.group == ""
         assert status.slaves == []
+        assert status.port == 11000
+        assert status.endpoint == "172.16.10.88:11000"
+
+    @patch("controller.Network.get")
+    def test_get_device_info_ci_secondary_port(self, mock_network, controller):
+        sync_xml = (
+            b'<SyncStatus name="Kitchen Speakers" modelName="CI S2" brand="NAD" '
+            b'id="172.16.10.144:11010" channelMode="mono"/>'
+        )
+        status_xml = b"<status><volume>49</volume><state>stream</state></status>"
+        mock_network.side_effect = [sync_xml, status_xml, None]
+
+        status = controller.get_device_info("172.16.10.144:11010")
+        assert status.name == "Kitchen Speakers"
+        assert status.port == 11010
+        assert status.endpoint == "172.16.10.144:11010"
+        assert status.volume == 49

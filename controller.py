@@ -26,15 +26,37 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 from xml.etree.ElementTree import ParseError
 import logging
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Set, Tuple
 from dataclasses import asdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from constants import BLUOS_PORT, CACHE_FILE, UNIFI_CACHE_FILE, MAX_XML_DEPTH, MAX_XML_SIZE, MAX_XML_ELEMENTS, MAX_XML_ATTRIBUTES, SUBPROCESS_TIMEOUT, DISCOVERY_MDNS, DISCOVERY_LSDP, DISCOVERY_BOTH
+from constants import (
+    BLUOS_MDNS_SERVICES,
+    CACHE_FILE,
+    UNIFI_CACHE_FILE,
+    MAX_XML_DEPTH,
+    MAX_XML_SIZE,
+    MAX_XML_ELEMENTS,
+    MAX_XML_ATTRIBUTES,
+    MAX_WORKERS_DISCOVERY,
+    SUBPROCESS_TIMEOUT,
+    DISCOVERY_MDNS,
+    DISCOVERY_LSDP,
+    DISCOVERY_BOTH,
+)
 from models import UniFiClient, PlayerStatus
 from config import Config
 from network import Network
 from utils import atomic_write, get_rate_limiter
-from validators import validate_ip, sanitize_ip, validate_hostname, validate_timeout
+from validators import (
+    validate_ip,
+    sanitize_ip,
+    validate_hostname,
+    validate_timeout,
+    parse_endpoint,
+    format_endpoint,
+    sanitize_endpoint,
+)
 from lsdp import LSDPDiscovery
 
 logger = logging.getLogger("Bluesound")
@@ -44,25 +66,48 @@ def parse_bluos_host(value: Optional[str]) -> str:
     """Extract an IP/host from BluOS endpoint values like ``172.16.0.1`` or ``172.16.0.1:11000``."""
     if not value:
         return ""
-    return value.strip().split(":")[0]
+    ip, _port = parse_endpoint(value.strip())
+    return ip or ""
+
+
+def parse_bluos_endpoint(value: Optional[str]) -> str:
+    """Normalize a BluOS id to canonical ``ip:port`` (default port 11000)."""
+    if not value:
+        return ""
+    return sanitize_endpoint(value.strip()) or ""
 
 
 def parse_sync_status_root(root: ET.Element) -> tuple[str, str, List[str]]:
     """
-    Parse ``/SyncStatus`` XML for master IP, group name, and slave IPs.
+    Parse ``/SyncStatus`` XML for master endpoint, group name, and slave endpoints.
 
     BluOS may expose values as root attributes or child elements. Legacy clients
     assumed ``master`` was an attribute; current firmware uses ``<master>``.
+    Multi-zone CI players use ``ip:port`` ids (e.g. ``172.16.0.1:11010``).
     """
-    master = parse_bluos_host(root.attrib.get("master") or root.findtext("master") or "")
+    master_attr = root.attrib.get("master") or ""
+    master_elem = root.find("master")
+    if master_elem is not None:
+        raw_master = (master_elem.text or "").strip()
+        port_attr = master_elem.attrib.get("port")
+        if raw_master and port_attr and ":" not in raw_master:
+            raw_master = f"{raw_master}:{port_attr.strip()}"
+        master = parse_bluos_endpoint(raw_master)
+    else:
+        master = parse_bluos_endpoint(master_attr)
 
     group = (root.attrib.get("group") or root.findtext("group") or "").strip()
 
     slaves: List[str] = []
     for slave_elem in root.findall("slave"):
-        slave_ip = parse_bluos_host(slave_elem.attrib.get("id") or slave_elem.text or "")
-        if slave_ip and slave_ip not in slaves:
-            slaves.append(slave_ip)
+        # Prefer id attribute (may include port); fall back to text / port attr.
+        raw_id = slave_elem.attrib.get("id") or slave_elem.text or ""
+        port_attr = slave_elem.attrib.get("port")
+        if raw_id and port_attr and ":" not in raw_id.strip():
+            raw_id = f"{raw_id.strip()}:{port_attr.strip()}"
+        slave_ep = parse_bluos_endpoint(raw_id)
+        if slave_ep and slave_ep not in slaves:
+            slaves.append(slave_ep)
 
     return master, group, slaves
 
@@ -72,79 +117,148 @@ class BluesoundController:
     
     def __init__(self):
         self.config = Config()
+        # Endpoint keys: canonical "ip:port" (CI secondary zones share an IP)
         self.ips: List[str] = []
         self.unifi_map: Dict[str, UniFiClient] = {}
     
     def discover(self, force_refresh: bool = False) -> None:
         """
-        Discovers devices using configured discovery method (mDNS, LSDP, or both).
+        Discover BluOS players as ``ip:port`` endpoints.
+
+        mDNS browses ``_musc._tcp`` (primary) and ``_musp._tcp`` (CI secondary
+        zones) and keeps the SRV port. LSDP is used when configured / as fallback
+        and yields ``ip:11000`` (primary only).
         """
         if not force_refresh and self._load_discovery_cache():
             return
-        
+
         discovery_method = self.config.get('DISCOVERY_METHOD', DISCOVERY_MDNS).lower()
         timeout = int(self.config.get('DISCOVERY_TIMEOUT', 5))
-        
+
         print(f"Scanning Network ({timeout}s) [{discovery_method}]...", file=sys.stderr)
-        
-        discovered_ips: Set[str] = set()
-        
-        # Try mDNS if method is mdns or both
+
+        endpoints: Set[str] = set()
+
         if discovery_method in (DISCOVERY_MDNS, DISCOVERY_BOTH):
-            mdns_ips = self._discover_mdns(timeout)
-            discovered_ips.update(mdns_ips)
-        
-        # Try LSDP if method is lsdp or both (or if mDNS failed)
-        if discovery_method == DISCOVERY_LSDP or (discovery_method == DISCOVERY_BOTH and not discovered_ips):
-            lsdp_ips = self._discover_lsdp(timeout)
-            discovered_ips.update(lsdp_ips)
-        
-        # Filter and validate all IPs
-        validated_ips = [ip for ip in discovered_ips if validate_ip(ip)]
-        self.ips = sorted(validated_ips)
-        
-        if self.ips:
+            for ep in self._discover_mdns(timeout):
+                cleaned = sanitize_endpoint(str(ep))
+                if cleaned:
+                    endpoints.add(cleaned)
+
+        if discovery_method == DISCOVERY_LSDP or (
+            discovery_method == DISCOVERY_BOTH and not endpoints
+        ):
+            for ip in self._discover_lsdp(timeout):
+                cleaned = sanitize_endpoint(str(ip))
+                if cleaned:
+                    endpoints.add(cleaned)
+
+        # Only keep / cache hosts that answer SyncStatus. Caching unverified
+        # mDNS hits (gateways, stale leases) poisons the TTL and slows every command.
+        verified = self._verify_endpoints(sorted(endpoints))
+        if verified:
+            self.ips = verified
             atomic_write(CACHE_FILE, {'ts': time.time(), 'ips': self.ips})
         else:
+            if endpoints:
+                logger.warning(
+                    "Discovered %s endpoint(s) but none answered SyncStatus; "
+                    "not updating discovery cache",
+                    len(endpoints),
+                )
+            self.ips = []
             logger.warning("No valid devices found via discovery")
-    
+
     def _discover_mdns(self, timeout: int) -> List[str]:
-        """Discover devices using mDNS."""
-        service = self.config.get('BLUOS_SERVICE', '_musc._tcp')
-        
-        # 1. Capture mDNS Output
-        raw_output = self._run_dns_sd(service, timeout)
-        if not raw_output:
-            logger.debug("No response from dns-sd")
+        """Browse ``_musc._tcp`` + ``_musp._tcp``; return ``ip:port`` from SRV."""
+        raw_chunks: List[str] = []
+        with ThreadPoolExecutor(max_workers=len(BLUOS_MDNS_SERVICES)) as executor:
+            futures = {
+                executor.submit(self._run_dns_sd, service, timeout): service
+                for service in BLUOS_MDNS_SERVICES
+            }
+            for future in as_completed(futures):
+                service = futures[future]
+                try:
+                    output = future.result() or ""
+                    if output:
+                        raw_chunks.append(output)
+                    else:
+                        logger.debug(f"No dns-sd response for {service}")
+                except Exception as e:
+                    logger.debug(f"dns-sd error for {service}: {e}")
+
+        if not raw_chunks:
             return []
-        
-        # 2. Parse Hostnames via Regex
-        host_pattern = re.compile(r"SRV\s+\d+\s+\d+\s+\d+\s+(\S+)")
-        hosts: Set[str] = set()
-        
-        for line in raw_output.splitlines():
-            if "SRV" in line:
-                match = host_pattern.search(line)
-                if match:
-                    hosts.add(match.group(1).rstrip('.'))
-        
-        if not hosts:
+
+        # SRV priority weight port target
+        srv_pattern = re.compile(r"SRV\s+\d+\s+\d+\s+(\d+)\s+(\S+)")
+        host_ports: Dict[str, Set[int]] = {}
+        for line in "\n".join(raw_chunks).splitlines():
+            if "SRV" not in line:
+                continue
+            match = srv_pattern.search(line)
+            if not match:
+                continue
+            try:
+                port = int(match.group(1))
+            except ValueError:
+                continue
+            host = match.group(2).rstrip('.')
+            if host:
+                host_ports.setdefault(host, set()).add(port)
+
+        if not host_ports:
             logger.debug("No devices found via mDNS.")
             return []
-        
-        # 3. Resolve IPs using dscacheutil with validation
-        resolved_ips = self._resolve_hosts(hosts)
-        return list(resolved_ips)
-    
+
+        endpoints: Set[str] = set()
+        for host, ports in host_ports.items():
+            for ip in self._resolve_hosts({host}):
+                for port in ports:
+                    endpoints.add(format_endpoint(ip, port))
+
+        return sorted(endpoints)
+
     def _discover_lsdp(self, timeout: int) -> List[str]:
-        """Discover devices using LSDP."""
+        """Discover chassis IPs using LSDP (normalized to ``ip:11000`` by caller)."""
         try:
-            lsdp = LSDPDiscovery(timeout=timeout)
-            return lsdp.discover()
+            return LSDPDiscovery(timeout=timeout).discover()
         except Exception as e:
             logger.debug(f"LSDP discovery error: {e}")
             return []
-    
+
+    def _verify_endpoints(self, endpoints: List[str]) -> List[str]:
+        """Keep endpoints that respond to ``/SyncStatus`` (single attempt each)."""
+        if not endpoints:
+            return []
+
+        def _check(ep: str) -> Optional[str]:
+            url = self._api_url(ep, "/SyncStatus")
+            if not url:
+                return None
+            data = Network.get(url, timeout=1, max_retries=1)
+            if not self._bluos_response_ok(data):
+                return None
+            root = self._safe_parse_xml(data, ep)
+            if root is None:
+                return None
+            return ep
+
+        ok: List[str] = []
+        workers = min(MAX_WORKERS_DISCOVERY, len(endpoints))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_check, ep): ep for ep in endpoints}
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                except Exception as e:
+                    logger.debug(f"Endpoint verify error for {futures[future]}: {e}")
+                    continue
+                if result:
+                    ok.append(result)
+        return sorted(ok)
+
     def _load_discovery_cache(self) -> bool:
         """Load discovery cache if valid."""
         if not os.path.exists(CACHE_FILE):
@@ -156,17 +270,38 @@ class BluesoundController:
             ttl = int(self.config.get('CACHE_TTL', 300))
             if time.time() - cached_ts < ttl:
                 cached_ips = data.get('ips', [])
-                # Validate cached IPs
-                validated_ips = [ip for ip in cached_ips if validate_ip(str(ip))]
-                if validated_ips:
+                # Normalize bare IPs and ip:port entries to canonical endpoints
+                validated: List[str] = []
+                for entry in cached_ips:
+                    endpoint = sanitize_endpoint(str(entry))
+                    if endpoint:
+                        validated.append(endpoint)
+                if validated:
                     logger.debug("Using cached discovery data.")
-                    self.ips = validated_ips
+                    self.ips = sorted(set(validated))
                     return True
                 else:
                     logger.warning("Cached IPs failed validation, refreshing")
         except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
             logger.debug(f"Cache load error: {e}")
         return False
+
+    def _resolve_endpoint(self, endpoint: str) -> Optional[Tuple[str, int]]:
+        """Parse ``ip`` or ``ip:port`` into a validated ``(ip, port)`` tuple."""
+        ip, port = parse_endpoint(endpoint)
+        if not ip:
+            return None
+        return ip, port
+
+    def _api_url(self, endpoint: str, path: str) -> Optional[str]:
+        """Build ``http://ip:port/path`` for a BluOS API call."""
+        resolved = self._resolve_endpoint(endpoint)
+        if not resolved:
+            return None
+        ip, port = resolved
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return f"http://{ip}:{port}{path}"
     
     def _run_dns_sd(self, service: str, timeout: int) -> str:
         """
@@ -192,7 +327,12 @@ class BluesoundController:
         # Validate timeout
         validated_timeout = validate_timeout(timeout, min_val=1, max_val=60)
         
-        tmp_file = os.path.join(os.path.expanduser("~"), f".bluesound-tmp-discovery-{os.getpid()}")
+        # Include service name so parallel musc/musp browses don't share a temp file
+        safe_service = re.sub(r'[^a-zA-Z0-9._-]', '_', service)
+        tmp_file = os.path.join(
+            os.path.expanduser("~"),
+            f".bluesound-tmp-discovery-{os.getpid()}-{safe_service}",
+        )
         try:
             with open(tmp_file, 'w') as outfile:
                 subprocess.run(
@@ -303,14 +443,32 @@ class BluesoundController:
         if not base or not key:
             return "MISSING_CONFIG"
         
-        # Check Cache
+        # self.ips holds ip:port endpoints; UniFi keys are chassis IPs
+        target_ips = {parse_bluos_host(ep) for ep in self.ips}
+        target_ips.discard("")
+        if not target_ips:
+            return "SKIPPED"
+
+        # Check Cache — only reuse if it still covers discovered players
         if os.path.exists(UNIFI_CACHE_FILE):
             try:
                 with open(UNIFI_CACHE_FILE, "r") as f:
                     data = json.load(f)
                 if time.time() - float(data.get('ts', 0)) < int(self.config.get('CACHE_TTL', 300)):
-                    self.unifi_map = {ip: UniFiClient(**d) for ip, d in data.get('clients', {}).items()}
-                    return "CACHED"
+                    cached_clients = data.get('clients', {}) or {}
+                    cached_map = {
+                        ip: UniFiClient(**d)
+                        for ip, d in cached_clients.items()
+                        if sanitize_ip(str(ip))
+                    }
+                    # Ignore stale/empty caches that don't match current players
+                    if cached_map and (target_ips & set(cached_map.keys())):
+                        self.unifi_map = cached_map
+                        return "CACHED"
+                    logger.debug(
+                        "UniFi cache miss for discovered players; refreshing "
+                        f"(targets={sorted(target_ips)}, cached={sorted(cached_map.keys())})"
+                    )
             except Exception:
                 pass
         
@@ -331,7 +489,6 @@ class BluesoundController:
         
         try:
             raw = json.loads(resp_bytes)
-            target_ips = set(self.ips)
             temp_map = {}
             
             for c in raw.get('data', []):
@@ -367,8 +524,10 @@ class BluesoundController:
                 )
             
             self.unifi_map = temp_map
-            cache_payload = {ip: asdict(obj) for ip, obj in temp_map.items()}
-            atomic_write(UNIFI_CACHE_FILE, {'ts': time.time(), 'clients': cache_payload})
+            # Don't overwrite a good cache with an empty fetch result
+            if temp_map:
+                cache_payload = {ip: asdict(obj) for ip, obj in temp_map.items()}
+                atomic_write(UNIFI_CACHE_FILE, {'ts': time.time(), 'clients': cache_payload})
             return f"SUCCESS:{len(temp_map)}"
         except Exception as e:
             logger.error(f"UniFi Parse Error: {e}", exc_info=True)
@@ -380,7 +539,7 @@ class BluesoundController:
         if not sanitized_ip:
             return "N/A"
         url = f"http://{sanitized_ip}/diagnostics"
-        content = Network.get(url, timeout=3)
+        content = Network.get(url, timeout=1, max_retries=1)
         if content:
             try:
                 html = content.decode('utf-8', errors='ignore')
@@ -490,23 +649,37 @@ class BluesoundController:
             logger.debug(f"XML processing error for {ip}: {e}")
             return None
     
-    def get_device_info(self, ip: str) -> PlayerStatus:
-        """Get comprehensive device information."""
-        # Validate IP before use
-        sanitized_ip = sanitize_ip(ip)
-        if not sanitized_ip:
-            logger.warning(f"Invalid IP address: {ip}")
+    def get_device_info(self, ip: str, include_uptime: bool = False) -> PlayerStatus:
+        """
+        Get device information for an ``ip`` or ``ip:port`` endpoint.
+
+        ``include_uptime`` hits ``/diagnostics`` (slow); only enable for status
+        reports. Volume and control paths leave it off.
+        """
+        resolved = self._resolve_endpoint(ip)
+        if not resolved:
+            logger.warning(f"Invalid endpoint: {ip}")
             return PlayerStatus(ip=ip, status="invalid")
-        
-        status = PlayerStatus(ip=sanitized_ip)
+
+        sanitized_ip, port = resolved
+        status = PlayerStatus(ip=sanitized_ip, port=port)
+        endpoint_key = format_endpoint(sanitized_ip, port)
         try:
-            sync_xml = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/SyncStatus", timeout=3)
-            status_xml = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Status", timeout=3)
-            status.uptime = self.get_sys_uptime(sanitized_ip)
+            sync_url = self._api_url(endpoint_key, "/SyncStatus")
+            status_url = self._api_url(endpoint_key, "/Status")
+            # One attempt each — retries on dead cache entries make `bsc volume` hang.
+            sync_xml = (
+                Network.get(sync_url, timeout=2, max_retries=1) if sync_url else None
+            )
+            status_xml = (
+                Network.get(status_url, timeout=2, max_retries=1) if status_url else None
+            )
+            if include_uptime:
+                status.uptime = self.get_sys_uptime(sanitized_ip)
             sync_volume_set = False
             
             if sync_xml:
-                root = self._safe_parse_xml(sync_xml, sanitized_ip)
+                root = self._safe_parse_xml(sync_xml, endpoint_key)
                 if root is None:
                     status.status = "xml_error"
                     return status
@@ -532,24 +705,23 @@ class BluesoundController:
                     status.battery = batt.attrib.get('level')
             
             if status_xml:
-                root = self._safe_parse_xml(status_xml, sanitized_ip)
-                if root is None:
-                    if status.status == "offline":
-                        status.status = "xml_error"
-                    return status
-                if not sync_volume_set:
-                    try:
-                        status.volume = max(0, min(100, int(root.findtext('volume', '0'))))
-                    except ValueError:
-                        status.volume = 0
-                status.state = root.findtext('state', 'stop')
-                status.service = root.findtext('service', 'Library/Input')
-                status.track = root.findtext('title1') or root.findtext('title') or ''
-                status.artist = root.findtext('artist', '')
-                status.album = root.findtext('album', '')
-                
-                if status.service == 'Raat':
-                    status.service = 'Roon'
+                root = self._safe_parse_xml(status_xml, endpoint_key)
+                if root is not None:
+                    if not sync_volume_set:
+                        try:
+                            status.volume = max(0, min(100, int(root.findtext('volume', '0'))))
+                        except ValueError:
+                            status.volume = 0
+                    status.state = root.findtext('state', 'stop')
+                    status.service = root.findtext('service', 'Library/Input')
+                    status.track = root.findtext('title1') or root.findtext('title') or ''
+                    status.artist = root.findtext('artist', '')
+                    status.album = root.findtext('album', '')
+                    
+                    if status.service == 'Raat':
+                        status.service = 'Roon'
+                elif status.name == 'Unknown':
+                    status.status = "xml_error"
             
             if status.brand and status.brand not in status.model:
                 status.full_model = f"{status.brand} {status.model}"
@@ -559,61 +731,53 @@ class BluesoundController:
             status.unifi = self.unifi_map.get(sanitized_ip)
         
         except ET.ParseError as e:
-            logger.error(f"XML Parse Error for {sanitized_ip}: {e}")
+            logger.error(f"XML Parse Error for {endpoint_key}: {e}")
             status.status = "parse_error"
         except ValueError as e:
-            logger.error(f"Value Error for {sanitized_ip}: {e}")
+            logger.error(f"Value Error for {endpoint_key}: {e}")
             status.status = "value_error"
         except Exception as e:
-            logger.debug(f"Device Info Error {sanitized_ip}: {e}")
+            logger.debug(f"Device Info Error {endpoint_key}: {e}")
             status.status = "error"
         
         return status
+
+    def _endpoint_get(
+        self,
+        endpoint: str,
+        path: str,
+        timeout: int = 2,
+        max_retries: int = 1,
+    ) -> Optional[bytes]:
+        """Validated GET against a BluOS endpoint (``ip`` or ``ip:port``)."""
+        url = self._api_url(endpoint, path)
+        if not url:
+            return None
+        resolved = self._resolve_endpoint(endpoint)
+        if not resolved:
+            return None
+        get_rate_limiter().wait_if_needed(format_endpoint(*resolved))
+        return Network.get(url, timeout=timeout, max_retries=max_retries)
     
     def play(self, ip: str) -> bool:
         """Start/resume playback on device."""
-        sanitized_ip = sanitize_ip(ip)
-        if not sanitized_ip:
-            return False
-        get_rate_limiter().wait_if_needed(sanitized_ip)
-        res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Play", timeout=2)
-        return res is not None
+        return self._endpoint_get(ip, "/Play") is not None
     
     def pause_device(self, ip: str) -> bool:
         """Pause playback on device."""
-        sanitized_ip = sanitize_ip(ip)
-        if not sanitized_ip:
-            return False
-        get_rate_limiter().wait_if_needed(sanitized_ip)
-        res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Pause", timeout=2)
-        return res is not None
+        return self._endpoint_get(ip, "/Pause") is not None
     
     def stop(self, ip: str) -> bool:
         """Stop playback on device."""
-        sanitized_ip = sanitize_ip(ip)
-        if not sanitized_ip:
-            return False
-        get_rate_limiter().wait_if_needed(sanitized_ip)
-        res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Stop", timeout=2)
-        return res is not None
+        return self._endpoint_get(ip, "/Stop") is not None
     
     def skip(self, ip: str) -> bool:
         """Skip to next track."""
-        sanitized_ip = sanitize_ip(ip)
-        if not sanitized_ip:
-            return False
-        get_rate_limiter().wait_if_needed(sanitized_ip)
-        res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Skip", timeout=2)
-        return res is not None
+        return self._endpoint_get(ip, "/Skip") is not None
     
     def previous(self, ip: str) -> bool:
         """Go to previous track."""
-        sanitized_ip = sanitize_ip(ip)
-        if not sanitized_ip:
-            return False
-        get_rate_limiter().wait_if_needed(sanitized_ip)
-        res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Back", timeout=2)
-        return res is not None
+        return self._endpoint_get(ip, "/Back") is not None
     
     # BluOS Custom Integration API v1.7 — play queue is /Playlist; inputs via
     # /Settings?id=capture&schemaVersion=32; Bluetooth set via /audiomodes.
@@ -658,16 +822,14 @@ class BluesoundController:
 
     def get_queue(self, ip: str) -> Optional[Dict]:
         """Get play queue (BluOS v1.7: GET /Playlist)."""
-        sanitized_ip = sanitize_ip(ip)
-        if not sanitized_ip:
+        resolved = self._resolve_endpoint(ip)
+        if not resolved:
             return None
-        res = Network.get(
-            f"http://{sanitized_ip}:{BLUOS_PORT}/Playlist?start=0&end=500",
-            timeout=3,
-        )
+        endpoint_key = format_endpoint(*resolved)
+        res = self._endpoint_get(endpoint_key, "/Playlist?start=0&end=500", timeout=3)
         if res:
             try:
-                root = self._safe_parse_xml(res, sanitized_ip)
+                root = self._safe_parse_xml(res, endpoint_key)
                 if root is not None:
                     queue_items = []
                     for song in root.findall("song"):
@@ -687,42 +849,29 @@ class BluesoundController:
                         count = len(queue_items)
                     return {"items": queue_items, "count": count}
             except Exception as e:
-                logger.debug(f"Queue parse error for {sanitized_ip}: {e}")
+                logger.debug(f"Queue parse error for {endpoint_key}: {e}")
         return None
 
     def clear_queue(self, ip: str) -> bool:
         """Clear the play queue (BluOS v1.7: GET /Clear)."""
-        sanitized_ip = sanitize_ip(ip)
-        if not sanitized_ip:
-            return False
-        get_rate_limiter().wait_if_needed(sanitized_ip)
-        res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Clear", timeout=2)
-        return res is not None
+        return self._endpoint_get(ip, "/Clear") is not None
 
     def move_queue_item(self, ip: str, from_index: int, to_index: int) -> bool:
         """Move a play-queue track (BluOS v1.7: GET /Move?old=&new=)."""
-        sanitized_ip = sanitize_ip(ip)
-        if not sanitized_ip:
-            return False
-        get_rate_limiter().wait_if_needed(sanitized_ip)
-        res = Network.get(
-            f"http://{sanitized_ip}:{BLUOS_PORT}/Move?old={from_index}&new={to_index}",
-            timeout=2,
-        )
-        return res is not None
+        return self._endpoint_get(ip, f"/Move?old={from_index}&new={to_index}") is not None
 
     def get_inputs(self, ip: str) -> Optional[List[Dict]]:
         """List capture inputs (BluOS v1.7: GET /Settings?id=capture&schemaVersion=32)."""
-        sanitized_ip = sanitize_ip(ip)
-        if not sanitized_ip:
+        resolved = self._resolve_endpoint(ip)
+        if not resolved:
             return None
-        res = Network.get(
-            f"http://{sanitized_ip}:{BLUOS_PORT}/Settings?id=capture&schemaVersion=32",
-            timeout=3,
+        endpoint_key = format_endpoint(*resolved)
+        res = self._endpoint_get(
+            endpoint_key, "/Settings?id=capture&schemaVersion=32", timeout=3
         )
         if res:
             try:
-                root = self._safe_parse_xml(res, sanitized_ip)
+                root = self._safe_parse_xml(res, endpoint_key)
                 if root is None:
                     return None
                 inputs: List[Dict] = []
@@ -746,21 +895,22 @@ class BluesoundController:
                     })
                 return inputs
             except Exception as e:
-                logger.debug(f"Inputs parse error for {sanitized_ip}: {e}")
+                logger.debug(f"Inputs parse error for {endpoint_key}: {e}")
         return None
 
     def set_input(self, ip: str, input_name: str) -> bool:
         """Select an input by display name or inputTypeIndex (BluOS v1.7: /Play?inputTypeIndex=)."""
-        sanitized_ip = sanitize_ip(ip)
-        if not sanitized_ip:
+        resolved = self._resolve_endpoint(ip)
+        if not resolved:
             return False
+        endpoint_key = format_endpoint(*resolved)
         target = (input_name or "").strip()
         if not target:
             return False
         type_index = target
         # Resolve display name / type token to inputTypeIndex when needed.
         if "-" not in target or not any(ch.isdigit() for ch in target.split("-")[-1]):
-            inputs = self.get_inputs(sanitized_ip) or []
+            inputs = self.get_inputs(endpoint_key) or []
             lowered = target.lower()
             match = next(
                 (
@@ -775,26 +925,21 @@ class BluesoundController:
             if not match:
                 return False
             type_index = match["id"]
-        get_rate_limiter().wait_if_needed(sanitized_ip)
         encoded = urllib.parse.quote(type_index, safe="-")
-        res = Network.get(
-            f"http://{sanitized_ip}:{BLUOS_PORT}/Play?inputTypeIndex={encoded}",
-            timeout=2,
-        )
-        return res is not None
+        return self._endpoint_get(endpoint_key, f"/Play?inputTypeIndex={encoded}") is not None
 
     def get_bluetooth_mode(self, ip: str) -> Optional[str]:
         """Read Bluetooth mode from capture settings (v1.7 has no /AudioModes GET)."""
-        sanitized_ip = sanitize_ip(ip)
-        if not sanitized_ip:
+        resolved = self._resolve_endpoint(ip)
+        if not resolved:
             return None
-        res = Network.get(
-            f"http://{sanitized_ip}:{BLUOS_PORT}/Settings?id=capture&schemaVersion=32",
-            timeout=3,
+        endpoint_key = format_endpoint(*resolved)
+        res = self._endpoint_get(
+            endpoint_key, "/Settings?id=capture&schemaVersion=32", timeout=3
         )
         if res:
             try:
-                root = self._safe_parse_xml(res, sanitized_ip)
+                root = self._safe_parse_xml(res, endpoint_key)
                 if root is None:
                     return None
                 for setting in root.iter("setting"):
@@ -802,42 +947,35 @@ class BluesoundController:
                         mode = setting.get("value", "")
                         return self._BT_MODE_MAP.get(mode, "Unknown")
             except Exception as e:
-                logger.debug(f"Bluetooth mode parse error for {sanitized_ip}: {e}")
+                logger.debug(f"Bluetooth mode parse error for {endpoint_key}: {e}")
         return None
 
     def set_bluetooth_mode(self, ip: str, mode: int) -> bool:
         """Set Bluetooth mode (0=Manual, 1=Automatic, 2=Guest, 3=Disabled)."""
-        sanitized_ip = sanitize_ip(ip)
-        if not sanitized_ip:
-            return False
         if mode not in (0, 1, 2, 3):
             return False
-        get_rate_limiter().wait_if_needed(sanitized_ip)
-        res = Network.get(
-            f"http://{sanitized_ip}:{BLUOS_PORT}/audiomodes?bluetoothAutoplay={mode}",
-            timeout=2,
-        )
-        return res is not None
+        return self._endpoint_get(ip, f"/audiomodes?bluetoothAutoplay={mode}") is not None
     
     def soft_reboot(self, ip: str) -> bool:
-        """Perform soft reboot."""
-        sanitized_ip = sanitize_ip(ip)
-        if not sanitized_ip:
+        """Perform soft reboot (chassis-level; uses IP without BluOS port)."""
+        resolved = self._resolve_endpoint(ip)
+        if not resolved:
             return False
+        sanitized_ip, _port = resolved
         get_rate_limiter().wait_if_needed(sanitized_ip)
         res = Network.post(f"http://{sanitized_ip}/Reboot", data={"soft": "1"}, timeout=2)
         return res is not None
     
     def get_presets(self, ip: str) -> Optional[List[Dict]]:
         """Get available presets."""
-        sanitized_ip = sanitize_ip(ip)
-        if not sanitized_ip:
+        resolved = self._resolve_endpoint(ip)
+        if not resolved:
             return None
-        get_rate_limiter().wait_if_needed(sanitized_ip)
-        res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Presets", timeout=3)
+        endpoint_key = format_endpoint(*resolved)
+        res = self._endpoint_get(endpoint_key, "/Presets", timeout=3)
         if res:
             try:
-                root = self._safe_parse_xml(res, sanitized_ip)
+                root = self._safe_parse_xml(res, endpoint_key)
                 if root is not None:
                     presets = []
                     for preset in root.findall('preset'):
@@ -848,57 +986,134 @@ class BluesoundController:
                         })
                     return presets
             except Exception as e:
-                logger.debug(f"Presets parse error for {sanitized_ip}: {e}")
+                logger.debug(f"Presets parse error for {endpoint_key}: {e}")
         return None
     
     def play_preset(self, ip: str, preset_id: int) -> bool:
         """Play a preset."""
-        sanitized_ip = sanitize_ip(ip)
-        if not sanitized_ip:
-            return False
-        get_rate_limiter().wait_if_needed(sanitized_ip)
-        res = Network.get(f"http://{sanitized_ip}:{BLUOS_PORT}/Preset?id={preset_id}", timeout=2)
-        return res is not None
+        return self._endpoint_get(ip, f"/Preset?id={preset_id}") is not None
     
-    def add_sync_slave(self, master_ip: str, slave_ip: str) -> bool:
-        """Add slave device to sync group."""
-        sanitized_master = sanitize_ip(master_ip)
-        sanitized_slave = sanitize_ip(slave_ip)
-        if not sanitized_master or not sanitized_slave:
+    @staticmethod
+    def _bluos_response_ok(content: Optional[bytes]) -> bool:
+        """True when BluOS returned a non-error XML/body."""
+        if not content:
             return False
-        get_rate_limiter().wait_if_needed(sanitized_master)
-        res = Network.get(
-            f"http://{sanitized_master}:{BLUOS_PORT}/AddSlave?slave={sanitized_slave}&port={BLUOS_PORT}",
-            timeout=2,
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError:
+            return False
+        if root.tag.lower() == "error" or root.find("error") is not None:
+            return False
+        return True
+
+    def _player_is_ungrouped(self, endpoint: str) -> Optional[bool]:
+        """
+        Sync membership from a reachable player.
+
+        Returns ``True`` if standalone, ``False`` if still has a master, or
+        ``None`` if SyncStatus could not be read (do not treat as success).
+        """
+        data = self._endpoint_get(endpoint, "/SyncStatus")
+        if not self._bluos_response_ok(data):
+            return None
+        root = self._safe_parse_xml(data, endpoint)
+        if root is None:
+            return None
+        master, _group, _slaves = parse_sync_status_root(root)
+        return not bool(master)
+
+    def _wait_until_ungrouped(self, slave_ep: str, attempts: int = 6) -> bool:
+        """Poll SyncStatus until the player reports no master (reachable)."""
+        for _ in range(attempts):
+            state = self._player_is_ungrouped(slave_ep)
+            if state is True:
+                return True
+            time.sleep(0.25)
+        return self._player_is_ungrouped(slave_ep) is True
+
+    def _ungroup_via_reparent(self, slave_ep: str) -> bool:
+        """
+        Clear an orphaned ``master reconnecting=true`` by briefly attaching the
+        player to a live primary, then removing it.
+
+        If AddSlave succeeds, keep trying RemoveSlave on that donor only — do
+        not hop to another donor while still grouped (would leave a wrong group).
+        """
+        slave = self._resolve_endpoint(slave_ep)
+        if not slave:
+            return False
+        slave_host, slave_port = slave
+        slave_ep = format_endpoint(slave_host, slave_port)
+        remove_path = f"/RemoveSlave?slave={slave_host}&port={slave_port}"
+
+        for donor in list(self.ips):
+            if donor == slave_ep:
+                continue
+            if not self.add_sync_slave(donor, slave_ep):
+                continue
+            for _ in range(3):
+                res = self._endpoint_get(donor, remove_path)
+                if self._bluos_response_ok(res) and self._wait_until_ungrouped(slave_ep):
+                    return True
+            logger.error(
+                "Reparent ungroup failed; %s may still be grouped under %s",
+                slave_ep,
+                donor,
+            )
+            return False
+        return False
+
+    def add_sync_slave(self, master_ip: str, slave_ip: str) -> bool:
+        """Add slave device to sync group (endpoints may include ``:port``)."""
+        master = self._resolve_endpoint(master_ip)
+        slave = self._resolve_endpoint(slave_ip)
+        if not master or not slave:
+            return False
+        master_host, master_port = master
+        slave_host, slave_port = slave
+        master_ep = format_endpoint(master_host, master_port)
+        res = self._endpoint_get(
+            master_ep,
+            f"/AddSlave?slave={slave_host}&port={slave_port}",
         )
-        if res is not None:
+        if self._bluos_response_ok(res):
             return True
-        get_rate_limiter().wait_if_needed(sanitized_master)
-        res = Network.get(
-            f"http://{sanitized_master}:{BLUOS_PORT}/Sync?slave={sanitized_slave}",
-            timeout=2,
-        )
-        return res is not None
+        res = self._endpoint_get(master_ep, f"/Sync?slave={slave_host}")
+        return self._bluos_response_ok(res)
     
     def remove_sync_slave(self, master_ip: str, slave_ip: str) -> bool:
-        """Remove slave device from sync group."""
-        sanitized_master = sanitize_ip(master_ip)
-        sanitized_slave = sanitize_ip(slave_ip)
-        if not sanitized_master or not sanitized_slave:
+        """
+        Remove slave from a sync group (endpoints may include ``:port``).
+
+        Prefer ``RemoveSlave`` on the primary. If the primary is offline (orphaned
+        ``reconnecting`` group), reparent onto any live player then remove.
+        """
+        master = self._resolve_endpoint(master_ip)
+        slave = self._resolve_endpoint(slave_ip)
+        if not master or not slave:
             return False
-        get_rate_limiter().wait_if_needed(sanitized_master)
-        res = Network.get(
-            f"http://{sanitized_master}:{BLUOS_PORT}/RemoveSlave?slave={sanitized_slave}&port={BLUOS_PORT}",
-            timeout=2,
-        )
-        if res is not None:
+        master_host, master_port = master
+        slave_host, slave_port = slave
+        master_ep = format_endpoint(master_host, master_port)
+        slave_ep = format_endpoint(slave_host, slave_port)
+        remove_path = f"/RemoveSlave?slave={slave_host}&port={slave_port}"
+        legacy_path = f"/Sync?remove={slave_host}"
+
+        def _try_remove(on_ep: str) -> bool:
+            for path in (remove_path, legacy_path):
+                res = self._endpoint_get(on_ep, path)
+                if self._bluos_response_ok(res) and self._wait_until_ungrouped(slave_ep):
+                    return True
+            return False
+
+        if _try_remove(master_ep) or _try_remove(slave_ep):
             return True
-        get_rate_limiter().wait_if_needed(sanitized_master)
-        res = Network.get(
-            f"http://{sanitized_master}:{BLUOS_PORT}/Sync?remove={sanitized_slave}",
-            timeout=2,
-        )
-        return res is not None
+
+        # Dead primary leaves slaves stuck with reconnecting=true; API self-unjoin
+        # returns <error>no slave available as new master</error>.
+        if self._ungroup_via_reparent(slave_ep):
+            return True
+        return False
 
     def collect_sync_break_operations(
         self,
@@ -906,37 +1121,40 @@ class BluesoundController:
         targets: Optional[List[PlayerStatus]] = None,
     ) -> List[tuple[str, str, str]]:
         """
-        Build RemoveSlave operations as ``(master_ip, slave_ip, label)`` tuples.
+        Build RemoveSlave operations as ``(master_endpoint, slave_endpoint, label)`` tuples.
 
         Ungrouping is always initiated on the primary via ``RemoveSlave``.
         """
-        device_names = {device.ip: device.name for device in devices}
+        device_names: Dict[str, str] = {}
+        for device in devices:
+            device_names[device.endpoint] = device.name
+            device_names.setdefault(device.ip, device.name)
         operations: List[tuple[str, str, str]] = []
         seen: set[tuple[str, str]] = set()
 
-        def add_operation(master_ip: str, slave_ip: str, label: str) -> None:
-            key = (master_ip, slave_ip)
+        def add_operation(master_ep: str, slave_ep: str, label: str) -> None:
+            key = (master_ep, slave_ep)
             if key in seen:
                 return
             seen.add(key)
-            operations.append((master_ip, slave_ip, label))
+            operations.append((master_ep, slave_ep, label))
 
         scoped_devices = targets if targets is not None else devices
 
         for device in scoped_devices:
             if device.slaves:
-                for slave_ip in device.slaves:
-                    slave_name = device_names.get(slave_ip, slave_ip)
+                for slave_ep in device.slaves:
+                    slave_name = device_names.get(slave_ep, slave_ep)
                     add_operation(
-                        device.ip,
-                        slave_ip,
+                        device.endpoint,
+                        slave_ep,
                         f"{slave_name} from {device.name}",
                     )
             elif device.master:
                 master_name = device_names.get(device.master, device.master)
                 add_operation(
                     device.master,
-                    device.ip,
+                    device.endpoint,
                     f"{device.name} from {master_name}",
                 )
 
