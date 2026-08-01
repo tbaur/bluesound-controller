@@ -68,9 +68,10 @@ class TestBluesoundController:
         
         with patch('controller.CACHE_FILE', cache_file):
             result = controller._load_discovery_cache()
-            # Should only load valid IPs
-            assert '192.168.1.1' in controller.ips
+            # Bare IPs normalize to ip:11000; loopback rejected
+            assert '192.168.1.1:11000' in controller.ips
             assert '127.0.0.1' not in controller.ips
+            assert '127.0.0.1:11000' not in controller.ips
     
     @patch('subprocess.check_output')
     def test_resolves_hosts(self, mock_subprocess, controller):
@@ -96,18 +97,32 @@ class TestBluesoundController:
     
     @patch('controller.Network.get')
     def test_get_device_info(self, mock_network, controller):
-        """Test getting device information."""
-        # Mock XML responses
+        """Test getting device information (no /diagnostics by default)."""
         sync_xml = b'<sync name="Test Speaker" modelName="Node" brand="Bluesound" version="1.0"/>'
         status_xml = b'<status><volume>50</volume><state>play</state><service>Library</service></status>'
         
-        mock_network.side_effect = [sync_xml, status_xml, b'<html>Uptime: 1 day</html>']
+        mock_network.side_effect = [sync_xml, status_xml]
         
         status = controller.get_device_info("192.168.1.1")
         
         assert status.name == "Test Speaker"
         assert status.volume == 50
         assert status.state == "play"
+        assert mock_network.call_count == 2
+        assert all('/diagnostics' not in str(c) for c in mock_network.call_args_list)
+
+    @patch('controller.Network.get')
+    def test_get_device_info_include_uptime(self, mock_network, controller):
+        """Status path may request /diagnostics for uptime."""
+        sync_xml = b'<sync name="Test Speaker" modelName="Node" brand="Bluesound" version="1.0"/>'
+        status_xml = b'<status><volume>50</volume><state>play</state></status>'
+        html = b'<html>Uptime: 1 day</html>'
+        mock_network.side_effect = [sync_xml, status_xml, html]
+
+        status = controller.get_device_info("192.168.1.1", include_uptime=True)
+
+        assert status.name == "Test Speaker"
+        assert mock_network.call_count == 3
     
     def test_get_device_info_invalid_ip(self, controller):
         """Test that invalid IPs are handled."""

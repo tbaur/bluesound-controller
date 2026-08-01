@@ -27,21 +27,22 @@ class TestIntegration:
         """Create CLI for integration tests."""
         return BluesoundCLI(controller)
     
+    @patch('controller.Network.get', return_value=b'<SyncStatus name="ok"/>')
     @patch('controller.BluesoundController._discover_mdns')
     @patch('controller.BluesoundController._discover_lsdp')
-    def test_full_discovery_flow(self, mock_lsdp, mock_mdns, controller, temp_config_dir):
+    def test_full_discovery_flow(
+        self, mock_lsdp, mock_mdns, _mock_net, controller, temp_config_dir
+    ):
         """Test full device discovery flow."""
         # Mock discovery methods to return IPs
-        mock_mdns.return_value = ['192.168.1.1']
+        mock_mdns.return_value = ['192.168.1.100']
         mock_lsdp.return_value = []
         
-        # Mock cache to not exist
         with patch('os.path.exists') as mock_exists:
             mock_exists.return_value = False
             controller.discover(force_refresh=True)
-        
-        assert len(controller.ips) > 0
-        assert '192.168.1.1' in controller.ips
+
+        assert controller.ips == ['192.168.1.100:11000']
     
     @patch('controller.Network.get')
     def test_status_command_flow(self, mock_network, controller, cli):

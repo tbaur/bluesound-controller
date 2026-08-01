@@ -127,6 +127,68 @@ def sanitize_ip(ip: str) -> Optional[str]:
     return None
 
 
+def validate_bluos_port(port: int) -> bool:
+    """Return True if port is a plausible BluOS API port."""
+    return isinstance(port, int) and 1024 <= port <= 65535
+
+
+def parse_endpoint(value: str, default_port: Optional[int] = None) -> tuple[Optional[str], int]:
+    """
+    Parse ``ip`` or ``ip:port`` into ``(ip, port)``.
+
+    Returns ``(None, default_port)`` when the IP is invalid.
+    """
+    from constants import BLUOS_PORT
+
+    if default_port is None:
+        default_port = BLUOS_PORT
+
+    if not value or not isinstance(value, str):
+        return None, default_port
+
+    value = value.strip()
+    if not value:
+        return None, default_port
+
+    # IPv4 endpoint: address[:port]
+    if value.count(":") == 1:
+        host, port_str = value.rsplit(":", 1)
+        try:
+            port = int(port_str)
+        except ValueError:
+            return None, default_port
+        sanitized = sanitize_ip(host)
+        if not sanitized or not validate_bluos_port(port):
+            return None, default_port
+        return sanitized, port
+
+    sanitized = sanitize_ip(value)
+    if not sanitized:
+        return None, default_port
+    return sanitized, default_port
+
+
+def format_endpoint(ip: str, port: Optional[int] = None) -> str:
+    """Return canonical ``ip:port`` endpoint string."""
+    from constants import BLUOS_PORT
+
+    if port is None:
+        port = BLUOS_PORT
+    return f"{ip}:{port}"
+
+
+def sanitize_endpoint(value: str, default_port: Optional[int] = None) -> Optional[str]:
+    """
+    Sanitize an endpoint to canonical ``ip:port`` form.
+
+    Accepts bare IP (assumes default BluOS port) or ``ip:port``.
+    """
+    ip, port = parse_endpoint(value, default_port=default_port)
+    if not ip:
+        return None
+    return format_endpoint(ip, port)
+
+
 def validate_volume(volume: int) -> int:
     """
     Validate and clamp volume to valid range with type checking.

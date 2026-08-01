@@ -10,15 +10,16 @@ Command-line controller for Bluesound devices on macOS. Pure Python standard lib
 ## Quick Start
 
 ```bash
-cd ~/github/bluesound-controller
+# from the cloned repo
 ./install.sh
 ```
 
 This installs to `~/.config/bluesound-controller` and creates a symlink at `~/local/bin/bluesound-controller`.
 
 ```bash
-bluesound-controller discover          # Find devices
+bluesound-controller discover          # Find devices (mDNS + CI zones)
 bluesound-controller status            # Show all device status
+bluesound-controller status --scan     # Force rediscovery, then status
 bluesound-controller volume 25         # Set volume
 bluesound-controller play "Kitchen"    # Play on specific device
 bluesound-controller --help            # Full command reference
@@ -26,19 +27,21 @@ bluesound-controller --help            # Full command reference
 
 ## Features
 
-- **Discovery** — mDNS and/or LSDP, with caching
+- **Discovery** — mDNS (`_musc` + `_musp` for CI secondary zones) and/or LSDP; players keyed as `ip:port`; SyncStatus verified before caching
 - **Playback** — play, pause, stop, skip, previous, toggle
 - **Volume** — absolute, relative (+/-), mute/unmute, reset to safe level
 - **Queue** — view, clear, reorder
 - **Inputs** — list and switch audio sources
 - **Bluetooth** — get/set mode (manual, auto, guest, disable)
 - **Presets** — list and play
-- **Sync Groups** — create, break, list multi-room groups
+- **Sync Groups** — create, break, list multi-room groups (including orphan ungroup when primary is offline)
 - **Diagnostics** — device info, uptime, network stats
 - **UniFi Integration** — optional network statistics from UniFi Controller
 - **Keychain** — store API keys securely in macOS Keychain
 
-All commands support targeting all devices (default), a specific device by name, or pattern matching.
+All device commands load discovery (cache by default). `status` and `sync` accept `--scan` to force a rescan; other commands auto-rescan once if every cached endpoint is dead. Target all devices (default), a name, or a pattern.
+
+NAD CI / multi-zone players (e.g. CI S2) advertise secondary zones on `_musp._tcp` with non-default ports (`11010+`). Those zones appear as separate `ip:port` endpoints alongside the primary on `11000`.
 
 ## Configuration
 
@@ -46,7 +49,6 @@ Stored in `~/.config/bluesound-controller/config.json`:
 
 ```json
 {
-  "BLUOS_SERVICE": "_musc._tcp",
   "DISCOVERY_METHOD": "mdns",
   "DISCOVERY_TIMEOUT": "5",
   "CACHE_TTL": "300",
@@ -59,6 +61,8 @@ Stored in `~/.config/bluesound-controller/config.json`:
 ```
 
 Discovery methods: `mdns` (default), `lsdp`, or `both` (mDNS first, LSDP fallback).
+
+mDNS always browses `_musc._tcp` (primary players) and `_musp._tcp` (CI secondary zones). LSDP discovers chassis IPs only (normalized to `ip:11000`).
 
 ### API Key Storage
 

@@ -157,7 +157,7 @@ class TestDeviceInfo:
         mock_network.side_effect = [sync_xml, status_xml, None]
         
         status = controller.get_device_info("192.168.1.101")
-        assert status.master == "192.168.1.100"
+        assert status.master == "192.168.1.100:11000"
 
     @patch('controller.Network.get')
     def test_synced_slave_prefers_syncstatus_volume(self, mock_network, controller):

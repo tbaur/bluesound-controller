@@ -18,7 +18,7 @@ limitations under the License.
 """
 import os
 
-__version__ = "1.2.1"  # x-release-please-version
+__version__ = "1.3.0"  # x-release-please-version
 
 # --- PATHS ---
 BASE_DIR = os.path.expanduser("~/.config/bluesound-controller")
@@ -39,6 +39,8 @@ except OSError:
 
 # --- OPERATIONAL CONSTANTS ---
 BLUOS_PORT = 11000
+# BluOS mDNS: primary players (_musc) + CI secondary zones (_musp)
+BLUOS_MDNS_SERVICES = ("_musc._tcp", "_musp._tcp")
 DEFAULT_TIMEOUT = 2
 MAX_XML_SIZE = 1_048_576  # 1MB Limit
 MAX_XML_DEPTH = 20  # Maximum XML nesting depth to prevent bombs
