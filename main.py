@@ -55,6 +55,7 @@ def run_tests_and_update_docs() -> None:
     else:
         # If not found, try common locations
         possible_roots = [
+            Path.home() / "github" / "tbaur" / "bluesound-controller",
             Path.home() / "github" / "bluesound-controller",
             Path.home() / ".config" / "bluesound-controller",
             Path(__file__).parent,
